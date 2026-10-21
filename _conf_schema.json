@@ -1,0 +1,45 @@
+{
+  "computer_qq_whitelist": {
+    "description": "允许使用受限工作目录的 QQ 号",
+    "type": "list",
+    "items": {"type": "string"},
+    "default": [],
+    "hint": "填写真实 QQ 号码。留空表示任何 QQ 都不能操作文件；仅 OneBot 私聊有效，群聊及 WebChat 不授予文件权限。不会授予系统管理员身份。"
+  },
+  "emergency_stop": {
+    "description": "急停：禁止全部工作目录操作",
+    "type": "bool",
+    "default": false,
+    "hint": "开启后白名单也无法读写工作目录，普通聊天和绘图仍可使用。"
+  },
+  "sensitive_terms": {
+    "description": "额外隐私词条",
+    "type": "list",
+    "items": {"type": "string"},
+    "default": [],
+    "hint": "可在本机管理端填写真实住址、单位位置、姓名或其他不希望对话出现的内容；词条本身不会注入模型提示词。仅支持明确文字匹配，不能自动识别所有隐私。"
+  },
+  "chat_messages_per_minute": {
+    "description": "每 QQ 每分钟最多模型请求数",
+    "type": "int",
+    "default": 10,
+    "hint": "按机器人账号与真实发送者共同计数，跨群共享额度。"
+  },
+  "daily_image_limit": {
+    "description": "每 QQ 每日绘图请求数",
+    "type": "int",
+    "default": 20,
+    "hint": "按 UTC 自然日计数，重启不会清零；失败请求也计入额度。0 表示禁止绘图。"
+  },
+  "image_cooldown_seconds": {
+    "description": "同一 QQ 两次绘图的最小间隔（秒）",
+    "type": "int",
+    "default": 60
+  },
+  "image_concurrency": {
+    "description": "全局绘图并发上限",
+    "type": "int",
+    "default": 2,
+    "hint": "同一 QQ 同时最多一个绘图请求；排队失败不会自动重试。"
+  }
+}

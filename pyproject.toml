@@ -1,0 +1,16 @@
+[project]
+name = "astrbot-plugin-qq-security"
+version = "0.1.0"
+description = "Deterministic QQ permissions and privacy controls for AstrBot"
+requires-python = ">=3.11"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 88
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I"]
