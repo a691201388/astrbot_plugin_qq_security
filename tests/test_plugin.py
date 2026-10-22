@@ -38,6 +38,40 @@ async def test_request_keeps_chat_images_but_removes_host_and_unknown_tools(plug
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("name", ["get_session_images", "search_image"])
+@pytest.mark.parametrize("reviewed", [True, False])
+async def test_image_source_tools_require_the_reviewed_plugin(plugin, name, reviewed):
+    plugin.config["computer_qq_whitelist"] = []
+    module = "astrbot_plugin_imgexploration" if reviewed else "unreviewed_plugin"
+    tool = FunctionTool(
+        name=name,
+        description="image source",
+        parameters={"type": "object"},
+        handler_module_path=f"data.plugins.{module}.main",
+    )
+    request = SimpleNamespace(
+        func_tool=ToolSet([tool]), system_prompt="", prompt="查来源", contexts=[]
+    )
+    await plugin.guard_request(Event(sender="999999999"), request)
+    assert request.func_tool.names() == ([name] if reviewed else [])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reviewed", [True, False])
+async def test_source_command_requires_the_reviewed_plugin(plugin, reviewed):
+    module = "astrbot_plugin_imgexploration" if reviewed else "unreviewed_plugin"
+    handler = SimpleNamespace(
+        event_filters=[CommandFilter("搜图")],
+        handler_module_path=f"data.plugins.{module}.main",
+    )
+    event = Event(text="/搜图 anime")
+    event.set_extra("activated_handlers", [handler])
+    await plugin.guard_message(event)
+    assert event.is_stopped() is (not reviewed)
+    assert event.get_extra("activated_handlers") == ([handler] if reviewed else [])
+
+
+@pytest.mark.asyncio
 async def test_webchat_agent_also_cannot_get_a_shell_to_remove_the_guard(plugin):
     tool = FunctionTool(
         name="astrbot_execute_shell", description="shell", parameters={"type": "object"}

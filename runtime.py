@@ -22,8 +22,13 @@ except ImportError:
 bot_operation = ContextVar("qq_security_bot_operation", default=None)
 
 TOOL_RULES = {
+    "qq_guard_codex": ("admin_codex", "astrbot_plugin_qq_security"),
     "codex_generate_image": ("image", "astrbot_plugin_codex_provider"),
     "search_memes": ("meme", "meme_manager"),
+    "get_session_images": ("image_source", "astrbot_plugin_imgexploration"),
+    "search_image": ("image_source", "astrbot_plugin_imgexploration"),
+    "memory_companion_remember": ("memory", "astrbot_plugin_memory_companion"),
+    "memory_companion_recall": ("memory", "astrbot_plugin_memory_companion"),
     "qq_guard_read": ("workspace_read", "astrbot_plugin_qq_security"),
     "qq_guard_write": ("workspace_write", "astrbot_plugin_qq_security"),
     "qq_guard_list": ("workspace_list", "astrbot_plugin_qq_security"),
@@ -310,6 +315,11 @@ class GuardedTool(FunctionTool):
         if not self.active or current != self.identity or error:
             self.plugin.ledger.audit(actor, self.name, "denied")
             return "Operation denied by the security policy."
+        if self.capability == "admin_codex" and not self.plugin.is_computer_admin(
+            event
+        ):
+            self.plugin.ledger.audit(actor, self.name, "denied")
+            return "Operation denied: a verified private QQ administrator is required."
         try:
             if self.capability == "image":
                 self.plugin.validate_references(event)
@@ -344,13 +354,31 @@ class GuardedTool(FunctionTool):
                                 last = item
                     result = last
                 elif inspect.isawaitable(result):
-                    result = await asyncio.wait_for(result, timeout=240)
+                    timeout = (
+                        self.plugin.admin_codex.timeout + 15
+                        if self.capability == "admin_codex"
+                        else 240
+                    )
+                    result = await asyncio.wait_for(result, timeout=timeout)
                 self.plugin.ledger.audit(actor, self.name, "completed")
+                if (
+                    self.capability == "admin_codex"
+                    and not self.plugin.is_computer_admin(event)
+                ):
+                    return "Operation denied: administrator access was revoked."
                 if isinstance(result, str):
-                    return self.plugin.policy.redact(result)
+                    return self.plugin.policy.redact(
+                        result,
+                        private_admin=self.capability == "admin_codex"
+                        and self.plugin.is_computer_admin(event),
+                    )
                 for part in getattr(result, "content", []) or []:
                     if isinstance(getattr(part, "text", None), str):
-                        part.text = self.plugin.policy.redact(part.text)
+                        part.text = self.plugin.policy.redact(
+                            part.text,
+                            private_admin=self.capability == "admin_codex"
+                            and self.plugin.is_computer_admin(event),
+                        )
                 return result
         except (PermissionError, ValueError, OSError, sqlite3.Error, TimeoutError):
             self.plugin.ledger.audit(actor, self.name, "blocked_or_failed")

@@ -37,10 +37,34 @@ class SecurityPolicy:
         )
 
     def authorize(self, identity, capability):
-        if capability in {"image", "meme"}:
+        if capability in {"image", "meme", "image_source"}:
             return None
-        if capability not in {"workspace_read", "workspace_write", "workspace_list"}:
+        if capability == "memory":
+            if (
+                identity.platform == "aiocqhttp"
+                and re.fullmatch(r"[1-9][0-9]{4,19}", identity.sender)
+                and re.fullmatch(r"[1-9][0-9]{4,19}", identity.account)
+                and (
+                    (identity.private and not identity.group)
+                    or (
+                        not identity.private
+                        and re.fullmatch(r"[1-9][0-9]{4,19}", identity.group)
+                    )
+                )
+            ):
+                return None
+            return "Memory tools require an authenticated QQ conversation."
+        if capability not in {
+            "workspace_read",
+            "workspace_write",
+            "workspace_list",
+            "admin_codex",
+        }:
             return "This operation is not exposed to the bot."
+        if capability == "admin_codex" and not self.config.get(
+            "admin_codex_enabled", False
+        ):
+            return "Administrator Codex execution is disabled."
         if self.config.get("emergency_stop", False):
             return "Computer operations are temporarily stopped."
         if not self.trusted(identity):
@@ -49,12 +73,12 @@ class SecurityPolicy:
             )
         return None
 
-    def redact(self, text):
+    def redact(self, text, *, private_admin=False):
         result = str(text or "")
         for term in self.config.get("sensitive_terms", []):
-            if isinstance(term, str) and len(term.strip()) >= 2:
+            if not private_admin and isinstance(term, str) and len(term.strip()) >= 2:
                 result = result.replace(term, "[隐私信息已隐藏]")
-        for pattern in (
+        patterns = (
             r"file://[^\s\"'<>，。！？]+",
             r"(?<![A-Za-z0-9])[A-Za-z]:[\\/][^\s\"'<>，。！？]+",
             r"\\\\[^\s\"'<>，。！？]+",
@@ -62,8 +86,11 @@ class SecurityPolicy:
             r"\bsk-[A-Za-z0-9_-]{16,}\b",
             r"\beyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b",
             r"(?i)\bBearer\s+[A-Za-z0-9._~-]{12,}",
-        ):
+        )
+        for pattern in patterns[4:] if private_admin else patterns:
             result = re.sub(pattern, "[敏感信息已隐藏]", result)
+        if private_admin:
+            return result
         for candidate in set(
             re.findall(
                 r"(?<![A-Za-z0-9_])(?:\d{1,3}\.){3}\d{1,3}(?![A-Za-z0-9_])|[0-9A-Fa-f]*:[0-9A-Fa-f:]+",
