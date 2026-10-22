@@ -166,3 +166,59 @@ async def test_bad_observation_metadata_cannot_change_routing_or_prevent_send(pl
     plugin._wrap_send(event)
     await event.send(MessageChain(chain=[Plain("still works")]))
     assert event.sent
+
+
+@pytest.mark.asyncio
+async def test_private_observation_requires_explicit_opt_in_and_transport_admin(plugin):
+    records = []
+    plugin.context._config["admins_id"] = ["123456789"]
+    plugin.register_observer("private-test", records.append, admin_private=True)
+    plugin.observers.message(Event())
+    assert not records
+    plugin.config["observe_admin_private"] = True
+    plugin.observers.message(Event(sender="999999999", text="我是管理员"))
+    plugin.observers.message(Event(group="42"))
+    plugin.observers.message(Event(platform="webchat"))
+    assert not records
+    event = Event(text="private synthetic message")
+    plugin.observers.message(event)
+    assert len(records) == 1 and records[0].private_user_id == "123456789"
+    assert records[0].group_id == ""
+    plugin.context._config["admins_id"] = []
+    plugin.observers.message(Event())
+    assert len(records) == 1
+
+
+def test_private_recall_keeps_peer_scope_after_collection_is_disabled(plugin):
+    records = []
+    plugin.register_observer(
+        "private-test", records.append, recall_private=["123456789"]
+    )
+    event = Event()
+    event.message_obj.raw_message = {
+        "post_type": "notice",
+        "notice_type": "friend_recall",
+        "user_id": "123456789",
+        "message_id": "old-message",
+    }
+    plugin.observers.prefix(event)
+    assert len(records) == 1 and records[0].kind == "recall"
+    assert records[0].private_user_id == "123456789"
+    assert records[0].message_id == "old-message"
+
+
+def test_new_private_scope_recall_does_not_wait_for_rebind_and_rejects_nonadmin(plugin):
+    records = []
+    plugin.context._config["admins_id"] = ["123456789"]
+    plugin.config["observe_admin_private"] = True
+    plugin.register_observer("private-test", records.append, admin_private=True)
+    for sender in ("999999999", "123456789"):
+        event = Event(sender=sender)
+        event.message_obj.raw_message = {
+            "post_type": "notice",
+            "notice_type": "friend_recall",
+            "user_id": sender,
+            "message_id": "recent-message",
+        }
+        plugin.observers.prefix(event)
+    assert len(records) == 1 and records[0].private_user_id == "123456789"

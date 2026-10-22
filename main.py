@@ -57,9 +57,9 @@ credentials. Group chats and all other senders retain the normal security policy
 """
 
 
-@register(PLUGIN_NAME, "a691201388", "QQ 权限、隐私及安全插件保护", "0.3.0")
+@register(PLUGIN_NAME, "a691201388", "QQ 权限、隐私及安全插件保护", "0.3.1")
 class QQSecurityPlugin(Star):
-    observation_api_version = 1
+    observation_api_version = 2
 
     def __init__(self, context, config):
         super().__init__(context)
@@ -109,9 +109,25 @@ class QQSecurityPlugin(Star):
         self.session_policy.restore()
         self.lifecycle.restore()
 
-    def register_observer(self, name, callback, groups=(), recall_groups=()):
+    def register_observer(
+        self,
+        name,
+        callback,
+        groups=(),
+        recall_groups=(),
+        *,
+        admin_private=False,
+        recall_private=(),
+    ):
         """Register a trusted passive consumer; return an idempotent unsubscribe."""
-        return self.observers.register(name, callback, groups, recall_groups)
+        return self.observers.register(
+            name,
+            callback,
+            groups,
+            recall_groups,
+            admin_private=admin_private,
+            recall_private=recall_private,
+        )
 
     def actor(self, identity):
         value = f"{identity.platform}|{identity.account}|{identity.sender}".encode()
@@ -414,6 +430,7 @@ class QQSecurityPlugin(Star):
         kept = []
         image_command = None
         source_command = False
+        social_command = False
         blocked_command = False
         for handler in handlers:
             command_filters = [
@@ -442,6 +459,13 @@ class QQSecurityPlugin(Star):
                 kept.append(handler)
             elif "qq_guard_status" in names and PLUGIN_NAME in module.split("."):
                 kept.append(handler)
+            elif (
+                names
+                and names <= {"鱼聊", "鱼聊忘记我"}
+                and "astrbot_plugin_fish_social" in module.split(".")
+            ):
+                kept.append(handler)
+                social_command = True
             else:
                 blocked_command = True
         handlers[:] = kept
@@ -461,6 +485,8 @@ class QQSecurityPlugin(Star):
         if text.startswith("/"):
             command = text[1:].split(maxsplit=1)[0].lower() if text[1:] else ""
             if command == "搜图" and source_command:
+                return
+            if command in {"鱼聊", "鱼聊忘记我"} and social_command:
                 return
             if command == "codex_image":
                 event.stop_event()

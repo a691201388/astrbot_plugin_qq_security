@@ -1,10 +1,13 @@
 """Bounded passive observations for trusted in-process consumers."""
 
 import inspect
+import re
 import time
 import uuid
 from dataclasses import dataclass, replace
 from functools import wraps
+
+from astrbot.core.platform.message_type import MessageType
 
 
 def passive(method):
@@ -41,6 +44,7 @@ class Observation:
     sequence: int = 0
     outcome: str = ""
     truncated: bool = False
+    private_user_id: str = ""
 
 
 class ObserverHub:
@@ -50,7 +54,16 @@ class ObserverHub:
         self.plugin = plugin
         self.sinks = {}
 
-    def register(self, name, callback, groups, recall_groups):
+    def register(
+        self,
+        name,
+        callback,
+        groups,
+        recall_groups,
+        *,
+        admin_private=False,
+        recall_private=(),
+    ):
         if not callable(callback) or inspect.iscoroutinefunction(callback):
             raise TypeError("Observers must be synchronous callbacks.")
         entry = [
@@ -58,6 +71,8 @@ class ObserverHub:
             frozenset(map(str, groups)),
             frozenset(map(str, recall_groups)),
             0,
+            bool(admin_private),
+            frozenset(map(str, recall_private)),
         ]
         self.sinks[str(name)] = entry
 
@@ -66,6 +81,32 @@ class ObserverHub:
                 self.sinks.pop(str(name), None)
 
         return unsubscribe
+
+    def allows(self, event):
+        """Check current transport identity before preparing any observed text.
+
+        Args:
+            event: The authenticated inbound QQ event, including its config route.
+
+        Returns:
+            Whether the enabled group or explicit private-admin scope permits it.
+        """
+        if event.get_platform_name() != "aiocqhttp":
+            return False
+        group = str(event.get_group_id() or "")
+        if group:
+            return group in set(map(str, self.plugin.config.get("observe_groups", [])))
+        sender = str(event.get_sender_id())
+        if (
+            not self.plugin.config.get("observe_admin_private", False)
+            or event.get_message_type() != MessageType.FRIEND_MESSAGE
+            or not re.fullmatch(r"[1-9][0-9]{4,19}", sender)
+        ):
+            return False
+        native = self.plugin.context.get_config(
+            event.get_extra("qq_security_original_umo") or event.unified_msg_origin
+        )
+        return sender in set(map(str, native.get("admins_id", [])))
 
     def stamp(self, event):
         if not event.get_extra("qq_security_event_id"):
@@ -83,17 +124,37 @@ class ObserverHub:
             received_at=event.get_extra("qq_security_received_at"),
             message_id=str(event.message_obj.message_id),
             sender_id=str(event.get_sender_id()),
+            private_user_id=(
+                str(event.get_sender_id()) if not event.get_group_id() else ""
+            ),
         )
 
     def emit(self, record):
         enabled = {str(g) for g in self.plugin.config.get("observe_groups", [])}
         for name, entry in list(self.sinks.items()):
-            callback, groups, recalls, failures = entry
-            permitted = record.group_id in (
-                recalls if record.kind == "recall" else groups & enabled
-            )
+            callback, groups, recalls, failures, admin_private, private_recalls = entry
+            if record.group_id:
+                permitted = record.group_id in (
+                    recalls if record.kind == "recall" else groups & enabled
+                )
+            else:
+                permitted = bool(record.private_user_id) and (
+                    (
+                        record.private_user_id in private_recalls
+                        or (
+                            admin_private
+                            and self.plugin.config.get("observe_admin_private", False)
+                        )
+                    )
+                    if record.kind == "recall"
+                    else admin_private
+                    and self.plugin.config.get("observe_admin_private", False)
+                )
             if not permitted or failures >= 3:
                 continue
+            if record.kind == "message" and record.private_user_id:
+                # Keep deletion delivery even if admin access is revoked before rebind.
+                entry[5] = private_recalls | {record.private_user_id}
             try:
                 returned = callback(record)
                 if inspect.isawaitable(returned):
@@ -115,10 +176,21 @@ class ObserverHub:
         raw = getattr(event.message_obj, "raw_message", None)
         if not isinstance(raw, dict) or raw.get("post_type") != "notice":
             return
-        if raw.get("notice_type") != "group_recall" or raw.get("message_id") is None:
+        notice = raw.get("notice_type")
+        if (
+            notice not in {"group_recall", "friend_recall"}
+            or raw.get("message_id") is None
+        ):
             return
         if event.get_extra("qq_security_recall_emitted"):
             return
+        if notice == "friend_recall":
+            peer = str(raw.get("user_id", ""))
+            known = any(peer in entry[5] for entry in self.sinks.values())
+            if not known and not (
+                self.allows(event) and peer == str(event.get_sender_id())
+            ):
+                return
         event.set_extra("qq_security_recall_emitted", True)
         self.emit(
             replace(
@@ -126,20 +198,20 @@ class ObserverHub:
                 group_id=str(raw.get("group_id", "")),
                 message_id=str(raw["message_id"]),
                 sender_id=str(raw.get("user_id", "")),
+                private_user_id=str(raw.get("user_id", ""))
+                if notice == "friend_recall"
+                else "",
             )
         )
 
     @passive
     def message(self, event):
-        if event.get_platform_name() != "aiocqhttp" or not event.get_group_id():
+        if not self.allows(event):
             return
         if event.get_extra("qq_security_observed"):
             return
         raw = getattr(event.message_obj, "raw_message", {}) or {}
         if isinstance(raw, dict) and raw.get("post_type") == "notice":
-            return
-        group = str(event.get_group_id())
-        if group not in {str(g) for g in self.plugin.config.get("observe_groups", [])}:
             return
         event.set_extra("qq_security_observed", True)
         components = list(event.get_messages())[:100]
@@ -167,10 +239,7 @@ class ObserverHub:
 
     @passive
     def send_start(self, event, chain):
-        if event.get_platform_name() != "aiocqhttp" or not event.get_group_id():
-            return None
-        group = str(event.get_group_id())
-        if group not in {str(g) for g in self.plugin.config.get("observe_groups", [])}:
+        if not self.allows(event):
             return None
         sequence = int(event.get_extra("qq_security_send_sequence") or 0) + 1
         event.set_extra("qq_security_send_sequence", sequence)
@@ -194,7 +263,7 @@ class ObserverHub:
 
     @passive
     def finish(self, event):
-        if event.get_platform_name() == "aiocqhttp" and event.get_group_id():
+        if self.allows(event):
             self.emit(
                 replace(
                     self.base(event, "turn_end"),

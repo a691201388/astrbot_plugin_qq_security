@@ -60,6 +60,12 @@
     "default": 2,
     "hint": "同一 QQ 同时最多一个绘图请求；排队失败不会自动重试。"
   },
+  "observe_admin_private": {
+    "description": "允许观察管理员 QQ 私聊（试用）",
+    "type": "bool",
+    "default": false,
+    "hint": "只处理 AstrBot admins_id 中真实 QQ 管理员的私聊，还需消费插件明确启用。普通私聊和群聊不因此开放。"
+  },
   "observe_groups": {
     "description": "允许被动观察的 QQ 群",
     "type": "list",
