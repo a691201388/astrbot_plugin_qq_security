@@ -57,9 +57,10 @@ credentials. Group chats and all other senders retain the normal security policy
 """
 
 
-@register(PLUGIN_NAME, "a691201388", "QQ 权限、隐私及安全插件保护", "0.3.1")
+@register(PLUGIN_NAME, "a691201388", "QQ 权限、隐私及安全插件保护", "0.3.2")
 class QQSecurityPlugin(Star):
     observation_api_version = 2
+    observation_excludes_social_commands = True
 
     def __init__(self, context, config):
         super().__init__(context)
@@ -118,6 +119,7 @@ class QQSecurityPlugin(Star):
         *,
         admin_private=False,
         recall_private=(),
+        unscoped_private_recalls=False,
     ):
         """Register a trusted passive consumer; return an idempotent unsubscribe."""
         return self.observers.register(
@@ -127,6 +129,7 @@ class QQSecurityPlugin(Star):
             recall_groups,
             admin_private=admin_private,
             recall_private=recall_private,
+            unscoped_private_recalls=unscoped_private_recalls,
         )
 
     def actor(self, identity):

@@ -2,7 +2,7 @@ name: astrbot_plugin_qq_security
 display_name: QQ 安全守卫
 short_desc: QQ 权限隔离、可选管理员 Codex 电脑执行、隐私保护与限额
 desc: 为 OneBot QQ 机器人提供默认拒绝的工具权限、私聊白名单、隐私脱敏、会话隔离和限额。默认模式保护安全插件生命周期；可选为经过双重名单验证的管理员私聊开放完整 Codex 电脑执行。完整执行模式不能保证管理员无法通过系统命令修改插件。本插件不是操作系统沙箱。
-version: 0.3.1
+version: 0.3.2
 author: a691201388
 repo: https://github.com/a691201388/astrbot_plugin_qq_security
 astrbot_version: ">=4.29.1,<4.30"

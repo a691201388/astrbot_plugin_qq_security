@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.3.2 — 2026-10-23
+
+- Exclude parsed Fish Social management commands from text observation by stable original command identity, without changing command authorization.
+- Strictly redact observation text and nicknames before limits, including computer-admin sends; leave live request/send permissions unchanged.
+- Drop text observations exceeding 100 components rather than retaining partially redacted prefixes.
+- Advertise command-exclusion capability and add opt-in peer-less bot recall metadata for upgraded consumers; legacy subscriptions do not receive the new semantic.
+
 ## 0.3.1 — 2026-10-22
 
 - Add opt-in real-administrator private observations and scoped friend recall metadata (API v2).

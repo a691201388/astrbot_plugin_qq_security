@@ -8,6 +8,7 @@ from dataclasses import dataclass, replace
 from functools import wraps
 
 from astrbot.core.platform.message_type import MessageType
+from astrbot.core.star.filter.command import CommandFilter
 
 
 def passive(method):
@@ -63,6 +64,7 @@ class ObserverHub:
         *,
         admin_private=False,
         recall_private=(),
+        unscoped_private_recalls=False,
     ):
         if not callable(callback) or inspect.iscoroutinefunction(callback):
             raise TypeError("Observers must be synchronous callbacks.")
@@ -73,6 +75,7 @@ class ObserverHub:
             0,
             bool(admin_private),
             frozenset(map(str, recall_private)),
+            bool(unscoped_private_recalls),
         ]
         self.sinks[str(name)] = entry
 
@@ -132,11 +135,27 @@ class ObserverHub:
     def emit(self, record):
         enabled = {str(g) for g in self.plugin.config.get("observe_groups", [])}
         for name, entry in list(self.sinks.items()):
-            callback, groups, recalls, failures, admin_private, private_recalls = entry
+            (
+                callback,
+                groups,
+                recalls,
+                failures,
+                admin_private,
+                private_recalls,
+                unscoped_private_recalls,
+            ) = entry
             if record.group_id:
                 permitted = record.group_id in (
                     recalls if record.kind == "recall" else groups & enabled
                 )
+            elif (
+                record.kind == "recall"
+                and record.sender_id == record.self_id
+                and not record.private_user_id
+            ):
+                # Peer-less bot recalls are metadata only; consumers must use their
+                # already-known scopes for this transport and bot account.
+                permitted = bool(private_recalls) and unscoped_private_recalls
             else:
                 permitted = bool(record.private_user_id) and (
                     (
@@ -184,11 +203,19 @@ class ObserverHub:
             return
         if event.get_extra("qq_security_recall_emitted"):
             return
+        private_peer = ""
         if notice == "friend_recall":
             peer = str(raw.get("user_id", ""))
-            known = any(peer in entry[5] for entry in self.sinks.values())
+            own_recall = peer == str(event.get_self_id())
+            private_peer = "" if own_recall else peer
+            known = any(
+                bool(entry[5]) and entry[6] if own_recall else peer in entry[5]
+                for entry in self.sinks.values()
+            )
             if not known and not (
-                self.allows(event) and peer == str(event.get_sender_id())
+                not own_recall
+                and self.allows(event)
+                and peer == str(event.get_sender_id())
             ):
                 return
         event.set_extra("qq_security_recall_emitted", True)
@@ -198,9 +225,7 @@ class ObserverHub:
                 group_id=str(raw.get("group_id", "")),
                 message_id=str(raw["message_id"]),
                 sender_id=str(raw.get("user_id", "")),
-                private_user_id=str(raw.get("user_id", ""))
-                if notice == "friend_recall"
-                else "",
+                private_user_id=private_peer,
             )
         )
 
@@ -208,24 +233,37 @@ class ObserverHub:
     def message(self, event):
         if not self.allows(event):
             return
+        # The waking stage already parsed commands, including configured prefixes.
+        # Do not pass correction drafts or deletion arguments to text observers.
+        for handler in event.get_extra("activated_handlers") or []:
+            if "astrbot_plugin_fish_social" in handler.handler_module_path.split(
+                "."
+            ) and any(
+                isinstance(item, CommandFilter)
+                and item._original_command_name in {"鱼聊", "鱼聊忘记我"}
+                for item in handler.event_filters
+            ):
+                return
         if event.get_extra("qq_security_observed"):
             return
         raw = getattr(event.message_obj, "raw_message", {}) or {}
         if isinstance(raw, dict) and raw.get("post_type") == "notice":
             return
         event.set_extra("qq_security_observed", True)
-        components = list(event.get_messages())[:100]
+        components = list(event.get_messages())
+        if len(components) > 100:
+            return
         text = "".join(str(p.text) for p in components if type(p).__name__ == "Plain")
         if not components:
             text = str(event.message_str or "")
-        safe = self.plugin.policy.redact(text[:16384])
+        safe = self.plugin.policy.redact(text)
         self.emit(
             replace(
                 self.base(event, "message"),
                 text=safe[:8192],
                 sender_name=self.plugin.policy.redact(
-                    str(event.get_sender_name() or "")[:80]
-                ),
+                    str(event.get_sender_name() or "")
+                )[:80],
                 reply_to=next(
                     (str(p.id) for p in components if type(p).__name__ == "Reply"), ""
                 ),
@@ -243,11 +281,13 @@ class ObserverHub:
             return None
         sequence = int(event.get_extra("qq_security_send_sequence") or 0) + 1
         event.set_extra("qq_security_send_sequence", sequence)
-        parts = list(chain.chain)[:100]
+        parts = list(chain.chain)
+        if len(parts) > 100:
+            return None
         text = "".join(str(p.text) for p in parts if type(p).__name__ == "Plain")
         record = replace(
             self.base(event, "send"),
-            text=text[:8192],
+            text=self.plugin.policy.redact(text)[:8192],
             sequence=sequence,
             components=tuple(type(p).__name__ for p in parts),
             outcome="started",

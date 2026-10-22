@@ -21,6 +21,46 @@ def subscribe(plugin, records, groups=("42",), recall_groups=("42",)):
     )
 
 
+def test_observed_nickname_is_redacted_before_truncation(plugin):
+    records = []
+    plugin.config["observe_groups"] = ["42"]
+    subscribe(plugin, records)
+    event = Event(group="42")
+    event.message_obj.sender.nickname = "x" * 76 + "测试隐私地址"
+    plugin.observers.message(event)
+    assert len(records) == 1
+    assert "测试隐私" not in records[0].sender_name
+
+
+def test_legacy_private_observer_never_receives_a_peerless_recall(plugin):
+    records = []
+    plugin.register_observer("legacy", records.append, recall_private=["123456789"])
+    event = Event(sender="987654321")
+    event.message_obj.raw_message = {
+        "post_type": "notice",
+        "notice_type": "friend_recall",
+        "user_id": "987654321",
+        "message_id": "unknown-bot-message",
+    }
+    plugin.observers.prefix(event)
+    assert not records
+
+
+@pytest.mark.parametrize("kind", ["message", "send"])
+def test_oversized_component_observation_does_not_store_partial_secrets(plugin, kind):
+    records = []
+    plugin.config.update(observe_groups=["42"], sensitive_terms=["SYNTHETIC-PRIVATE"])
+    subscribe(plugin, records)
+    event = Event(group="42")
+    parts = [Plain("x")] * 99 + [Plain("SYNTHETIC-"), Plain("PRIVATE")]
+    if kind == "message":
+        event.message_obj.message = parts
+        plugin.observers.message(event)
+    else:
+        plugin.observers.send_start(event, MessageChain(parts))
+    assert not records
+
+
 @pytest.mark.asyncio
 async def test_observation_is_dormant_until_the_guard_group_is_enabled(plugin):
     records = []
