@@ -59,5 +59,12 @@
     "type": "int",
     "default": 2,
     "hint": "同一 QQ 同时最多一个绘图请求；排队失败不会自动重试。"
+  },
+  "observe_groups": {
+    "description": "允许被动观察的 QQ 群",
+    "type": "list",
+    "items": {"type": "string"},
+    "default": [],
+    "hint": "默认不采集。仅为可信聊天优化插件提供观察，不改变唤醒或权限。还需在消费插件中启用同一群。"
   }
 }

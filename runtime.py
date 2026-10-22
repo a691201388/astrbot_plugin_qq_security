@@ -134,6 +134,7 @@ class PipelineGuard:
             with bot_scope(event):
                 try:
                     try:
+                        plugin.observers.prefix(event)
                         plugin._wrap_send(event)
                         event.set_extra(
                             "qq_security_effective_config", scheduler.ctx.astrbot_config
@@ -155,6 +156,7 @@ class PipelineGuard:
                     if not event.is_stopped():
                         return await original(scheduler, event)
                 finally:
+                    plugin.observers.finish(event)
                     try:
                         plugin.cleanup_media(event)
                     finally:

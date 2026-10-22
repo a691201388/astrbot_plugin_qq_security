@@ -1,5 +1,6 @@
 """QQ guard hooks; manual AstrBot management remains available to the owner."""
 
+import asyncio
 import copy
 import hashlib
 import json
@@ -22,6 +23,7 @@ from astrbot.core.utils.astrbot_path import get_astrbot_data_path, get_astrbot_t
 
 from .admin_codex import AdminCodexRunner
 from .media import download_image
+from .observer import ObserverHub
 from .runtime import (
     GuardedTool,
     LifecycleGuard,
@@ -55,12 +57,15 @@ credentials. Group chats and all other senders retain the normal security policy
 """
 
 
-@register(PLUGIN_NAME, "a691201388", "QQ 权限、隐私及安全插件保护", "0.2.0")
+@register(PLUGIN_NAME, "a691201388", "QQ 权限、隐私及安全插件保护", "0.3.0")
 class QQSecurityPlugin(Star):
+    observation_api_version = 1
+
     def __init__(self, context, config):
         super().__init__(context)
         self.config = config
         self.policy = SecurityPolicy(config)
+        self.observers = ObserverHub(self)
         self.data_dir = StarTools.get_data_dir(PLUGIN_NAME)
         self.ledger = UsageLedger(self.data_dir / "ledger.sqlite3")
         salt_file = self.data_dir / "audit-salt"
@@ -98,10 +103,15 @@ class QQSecurityPlugin(Star):
         self.pipeline.install()
 
     async def terminate(self):
+        self.observers.sinks.clear()
         await self.admin_codex.close()
         self.pipeline.restore()
         self.session_policy.restore()
         self.lifecycle.restore()
+
+    def register_observer(self, name, callback, groups=(), recall_groups=()):
+        """Register a trusted passive consumer; return an idempotent unsubscribe."""
+        return self.observers.register(name, callback, groups, recall_groups)
 
     def actor(self, identity):
         value = f"{identity.platform}|{identity.account}|{identity.sender}".encode()
@@ -171,6 +181,7 @@ class QQSecurityPlugin(Star):
         event.set_extra("qq_security_effective_config", selected)
         self._namespace(event)
         identity = identity_from_event(event)
+        self.observers.message(event)
         if (
             identity.platform == "aiocqhttp"
             and identity.group
@@ -337,7 +348,18 @@ class QQSecurityPlugin(Star):
                     )
                 except Exception:
                     safe = MessageChain(chain=[Plain("消息未通过安全检查。")])
-                return await original_send(safe)
+                record = plugin.observers.send_start(current_event, safe)
+                try:
+                    result = await original_send(safe)
+                except (asyncio.CancelledError, TimeoutError, ConnectionError, OSError):
+                    plugin.observers.send_end(record, "outcome_unknown")
+                    raise
+                except Exception:
+                    plugin.observers.send_end(record, "call_failed")
+                    raise
+                else:
+                    plugin.observers.send_end(record, "call_returned")
+                    return result
 
             async def guarded_stream(current_event, generator, use_fallback=False):
                 parts = []
@@ -480,6 +502,7 @@ class QQSecurityPlugin(Star):
 
     @filter.on_llm_request(priority=-(10**30))
     async def guard_request(self, event, request):
+        event.set_extra("qq_security_request_ready", None)
         original = list(request.func_tool.tools) if request.func_tool else []
         request.func_tool = ToolSet()
         try:
@@ -564,6 +587,7 @@ class QQSecurityPlugin(Star):
             if not private_admin:
                 self._scrub_text_parts(request.contexts)
                 self._scrub_text_parts(getattr(request, "extra_user_content_parts", []))
+            event.set_extra("qq_security_request_ready", id(request))
         except Exception as error:
             event.stop_event()
             request.func_tool = ToolSet()
@@ -599,9 +623,11 @@ class QQSecurityPlugin(Star):
 
     @filter.on_llm_response(priority=-(10**30))
     async def guard_response(self, event, response):
+        event.set_extra("qq_security_response_ready", None)
         response.completion_text = self.policy.redact(
             response.completion_text, private_admin=self.is_computer_admin(event)
         )
+        event.set_extra("qq_security_response_ready", id(response))
 
     @filter.on_decorating_result(priority=-(10**31))
     async def guard_result(self, event):
