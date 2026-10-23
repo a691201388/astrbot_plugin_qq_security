@@ -244,6 +244,23 @@ async def test_read_budget_cancels_a_stuck_onebot_call(plugin, forwarded, monkey
     forwarded.bot.call_action.side_effect = wait_forever
     await plugin.prepare_pipeline(forwarded, plugin.context._config)
     assert forwarded.is_stopped() and cancelled == [True]
+    assert "超时" in forwarded.sent[-1].get_plain_text()
+    assert "过期" not in forwarded.sent[-1].get_plain_text()
+
+
+@pytest.mark.asyncio
+async def test_slow_nested_forward_can_finish_after_twelve_seconds(plugin, forwarded):
+    result = forwarded.bot.call_action.return_value
+
+    async def slow_fetch(**kwargs):
+        await asyncio.sleep(13)
+        return result
+
+    forwarded.bot.call_action.side_effect = slow_fetch
+    await plugin.prepare_pipeline(forwarded, plugin.context._config)
+    assert not forwarded.is_stopped()
+    assert "周六打游戏" in forwarded.get_extra("qq_security_forward_part").text
+    forwarded.bot.call_action.assert_awaited_once()
 
 
 @pytest.mark.asyncio

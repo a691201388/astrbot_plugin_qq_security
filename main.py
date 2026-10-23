@@ -60,7 +60,7 @@ credentials. Group chats and all other senders retain the normal security policy
 """
 
 
-@register(PLUGIN_NAME, "a691201388", "QQ 权限、隐私及安全插件保护", "0.3.6")
+@register(PLUGIN_NAME, "a691201388", "QQ 权限、隐私及安全插件保护", "0.3.7")
 class QQSecurityPlugin(Star):
     observation_api_version = 2
     observation_excludes_social_commands = True
@@ -338,12 +338,14 @@ class QQSecurityPlugin(Star):
             except Exception as error:
                 self.logger.warning("Forward reading failed: %s", type(error).__name__)
                 event.stop_event()
-                await event.send(
-                    event.plain_result(
-                        "这份合并转发暂时没读到正文，可能已过期或拉取失败。"
-                        "请重新转发，每次最多 3 张卡片；图片和文件暂不展开。"
-                    )
+                message = (
+                    "读取这份合并转发超时，还没拿到完整正文。"
+                    "可稍后重试，或分成较小的转发；图片和文件暂不展开。"
+                    if isinstance(error, TimeoutError)
+                    else "这份合并转发暂时没读到正文，可能已过期或拉取失败。"
+                    "请重新转发，每次最多 3 张卡片；图片和文件暂不展开。"
                 )
+                await event.send(event.plain_result(message))
                 return
             event.set_extra("qq_security_forward_part", reference)
             event.message_obj.message = [

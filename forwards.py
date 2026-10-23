@@ -7,7 +7,7 @@ import secrets
 
 from astrbot.core.agent.message import TextPart
 
-FORWARD_TIMEOUT = 12
+FORWARD_TIMEOUT = 45
 MAX_CARDS = 3
 MAX_RECORDS = 100
 MAX_SEGMENTS = 1000
@@ -43,7 +43,7 @@ async def read_forward_text(event, cards, redact, authorized, *, max_depth=3):
 
     Raises:
         ValueError: The card or returned payload cannot be safely read.
-        TimeoutError: Retrieval exceeds the total twelve-second budget.
+        TimeoutError: Retrieval exceeds the total forty-five-second budget.
     """
     if not 1 <= len(cards) <= MAX_CARDS:
         raise ValueError("Unsupported forward card count.")

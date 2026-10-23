@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.3.7 — 2026-10-23
+
+- Increase the total forward retrieval deadline from 12 to 45 seconds: live NapCat retrieval of nested records can exceed the previous deadline even when the card remains available.
+- Report timeouts separately from expired or failed records, while retaining cancellation, authorization rechecks, tool restrictions and all existing depth/content limits.
+
 ## 0.3.6 — 2026-10-23
 
 - Prefer the nested body already present in NapCat's `forward.data.content`; inner numeric IDs may not be independently retrievable with `get_forward_msg`.
