@@ -260,7 +260,10 @@ async def test_native_wake_stage_controls_group_forward_fetch(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("limit", ["records", "text", "segments"])
-async def test_nested_content_shares_all_outer_budgets(plugin, forwarded, limit):
+@pytest.mark.parametrize("embedded", [False, True])
+async def test_nested_content_shares_all_outer_budgets(
+    plugin, forwarded, limit, embedded
+):
     from astrbot_plugin_qq_security.forwards import MAX_RECORDS, MAX_TEXT
 
     text = "x" * (MAX_TEXT // 2) if limit == "text" else "child"
@@ -270,8 +273,11 @@ async def test_nested_content_shares_all_outer_budgets(plugin, forwarded, limit)
         child_nodes = [
             payload("", *({"type": "face"} for _ in range(1100)))["messages"][0]
         ]
+    child = ref("child")
+    if embedded:
+        child["data"]["content"] = child_nodes
     graph = {
-        "synthetic-forward-id": payload("root", ref("child"), ref("later")),
+        "synthetic-forward-id": payload("root", child, ref("later")),
         "child": {"messages": child_nodes},
         "later": payload("must not fetch"),
     }
@@ -279,7 +285,86 @@ async def test_nested_content_shares_all_outer_budgets(plugin, forwarded, limit)
     await plugin.prepare_pipeline(forwarded, plugin.context._config)
     data = reference_data(forwarded)
     assert not forwarded.is_stopped()
-    assert forwarded.bot.call_action.await_count == 2
+    assert forwarded.bot.call_action.await_count == (1 if embedded else 2)
     assert len(data["records"]) <= MAX_RECORDS
     assert sum(len(r["text"]) for r in data["records"]) <= MAX_TEXT
     assert data["truncated"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("depth", [0, 1, 3])
+async def test_napcat_embedded_forward_uses_returned_body_not_inner_id(
+    plugin, forwarded, depth
+):
+    plugin.config["forward_max_depth"] = depth
+    inner = ref("12345")
+    inner["data"]["content"] = payload("deep text 测试隐私地址")["messages"]
+    middle = ref("67890")
+    middle["data"]["content"] = payload("middle text", inner)["messages"]
+
+    async def fetch(**kwargs):
+        if kwargs["message_id"] == "synthetic-forward-id":
+            return payload("outer text", middle)
+        return {"status": "failed", "retcode": 200, "message": "Cannot fetch inner ID"}
+
+    forwarded.bot.call_action.side_effect = fetch
+    await plugin.prepare_pipeline(forwarded, plugin.context._config)
+    data = reference_data(forwarded)
+    assert [r["depth"] for r in data["records"]] == list(range(min(depth, 2) + 1))
+    assert ("deep text" in str(data)) == (depth >= 2)
+    assert "测试隐私地址" not in str(data)
+    assert data["truncated"] == (depth < 2)
+    forwarded.bot.call_action.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_embedded_forward_duplicate_and_reference_cycle_are_skipped(
+    plugin, forwarded
+):
+    child = ref("12345")
+    child["data"]["content"] = payload("inner body", ref("synthetic-forward-id"))[
+        "messages"
+    ]
+    forwarded.bot.call_action.return_value = payload("root", child, child, ref("12345"))
+    await plugin.prepare_pipeline(forwarded, plugin.context._config)
+    data = reference_data(forwarded)
+    assert len(data["records"]) == 2
+    assert "inner body" in str(data)
+    assert "重复或循环" in str(data["notices"])
+    forwarded.bot.call_action.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("inline", [[], None])
+async def test_empty_embedded_forward_still_uses_reference_lookup(
+    plugin, forwarded, inline
+):
+    child = ref("child")
+    child["data"]["content"] = inline
+    graph = {
+        "synthetic-forward-id": payload("root", child),
+        "child": payload("looked up child"),
+    }
+    forwarded.bot.call_action.side_effect = lambda **kw: graph[kw["message_id"]]
+    await plugin.prepare_pipeline(forwarded, plugin.context._config)
+    data = reference_data(forwarded)
+    assert "looked up child" in str(data)
+    assert forwarded.bot.call_action.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_failed_inner_lookup_does_not_hide_later_embedded_body(plugin, forwarded):
+    child = ref("12345")
+    child["data"]["content"] = payload("available inner body")["messages"]
+
+    async def fetch(**kwargs):
+        if kwargs["message_id"] == "synthetic-forward-id":
+            return payload("root", ref("12345"), ref("12345"), child, child)
+        return {"status": "failed", "retcode": 200}
+
+    forwarded.bot.call_action.side_effect = fetch
+    await plugin.prepare_pipeline(forwarded, plugin.context._config)
+    data = reference_data(forwarded)
+    assert len(data["records"]) == 2
+    assert "available inner body" in str(data)
+    assert forwarded.bot.call_action.await_count == 2

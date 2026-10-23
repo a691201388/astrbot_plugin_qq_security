@@ -50,6 +50,7 @@ async def read_forward_text(event, cards, redact, authorized, *, max_depth=3):
     max_depth = max(0, min(5, max_depth)) if type(max_depth) is int else 3
     records = []
     seen = set()
+    attempted = set()
     notices = set()
     remaining = MAX_TEXT
     segments_left = MAX_SEGMENTS
@@ -66,13 +67,13 @@ async def read_forward_text(event, cards, redact, authorized, *, max_depth=3):
             r"[A-Za-z0-9._+=/-]{1,512}", reference
         ):
             raise ValueError("Invalid forward reference.")
-        if reference in seen:
+        if reference in seen or reference in attempted:
             notices.add("重复或循环引用已跳过")
             return None
         if fetches >= MAX_FETCHES:
             notices.add("读取次数达到上限，部分转发未展开")
             return None
-        seen.add(reference)
+        attempted.add(reference)
         fetches += 1
         try:
             payload = await event.bot.call_action(
@@ -105,6 +106,8 @@ async def read_forward_text(event, cards, redact, authorized, *, max_depth=3):
         )
         if not isinstance(nodes, list) or not nodes:
             raise ValueError("Forward has no readable records.")
+        # Failed lookups must not hide a later occurrence with an embedded body.
+        seen.add(reference)
         return nodes
 
     async def read_nodes(nodes, depth, parent):
@@ -160,9 +163,13 @@ async def read_forward_text(event, cards, redact, authorized, *, max_depth=3):
                     if not isinstance(text, str):
                         raise ValueError("Invalid forwarded text.")
                 elif kind == "forward" and isinstance(data, dict):
-                    children.append(
-                        ("reference", data.get("id", data.get("message_id")))
-                    )
+                    # NapCat embeds inner bodies whose IDs cannot be fetched alone.
+                    if isinstance(data.get("content"), list) and data["content"]:
+                        children.append(("embedded_forward", data))
+                    else:
+                        children.append(
+                            ("reference", data.get("id", data.get("message_id")))
+                        )
                     text = "[嵌套转发：见下级记录或未展开提示]"
                 elif kind in ("node", "nodes") and isinstance(data, dict):
                     if kind == "node" and ("content" in data or "message" in data):
@@ -215,7 +222,21 @@ async def read_forward_text(event, cards, redact, authorized, *, max_depth=3):
                     notices.add("记录或文字总量达到上限，后续内容未展开")
                     break
                 try:
-                    nested = await fetch(child) if child_kind == "reference" else child
+                    if child_kind == "reference":
+                        nested = await fetch(child)
+                    elif child_kind == "embedded_forward":
+                        reference = child.get("id", child.get("message_id"))
+                        if type(reference) in (str, int) and re.fullmatch(
+                            r"[A-Za-z0-9._+=/-]{1,512}", str(reference)
+                        ):
+                            reference = str(reference)
+                            if reference in seen:
+                                notices.add("重复或循环引用已跳过")
+                                continue
+                            seen.add(reference)
+                        nested = child["content"]
+                    else:
+                        nested = child
                     if nested is not None:
                         await read_nodes(nested, depth + 1, record_index)
                 except PermissionError:

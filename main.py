@@ -60,7 +60,7 @@ credentials. Group chats and all other senders retain the normal security policy
 """
 
 
-@register(PLUGIN_NAME, "a691201388", "QQ 权限、隐私及安全插件保护", "0.3.5")
+@register(PLUGIN_NAME, "a691201388", "QQ 权限、隐私及安全插件保护", "0.3.6")
 class QQSecurityPlugin(Star):
     observation_api_version = 2
     observation_excludes_social_commands = True

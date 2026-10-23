@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.6 — 2026-10-23
+
+- Prefer the nested body already present in NapCat's `forward.data.content`; inner numeric IDs may not be independently retrievable with `get_forward_msg`.
+- Apply the existing shared depth, record, segment, text and duplicate/cycle limits to these embedded bodies; keep reference lookup for missing or empty content.
+- Cover the observed payload shape and retain redaction, temporary context, tool restrictions and all configured limits.
+
 ## 0.3.5 — 2026-10-23
 
 - Read nested forward references and inline nodes with a configurable depth limit (default 3, range 0–5, excluding the outer card).
