@@ -314,6 +314,9 @@ class GuardedTool(FunctionTool):
         current = identity_from_event(event)
         error = self.plugin.policy.authorize(current, self.capability)
         actor = self.plugin.actor(current)
+        if event.get_extra("qq_security_forward_read_only"):
+            self.plugin.ledger.audit(actor, self.name, "denied")
+            return "Operation denied: forwarded conversation turns are read-only."
         if not self.active or current != self.identity or error:
             self.plugin.ledger.audit(actor, self.name, "denied")
             return "Operation denied by the security policy."

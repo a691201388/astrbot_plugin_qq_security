@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.3.4 — 2026-10-23
+
+- Read directly received merged-forward text only for the current verified private QQ administrator, through the matching OneBot account.
+- Limit retrieval time, cards, records, segments and text; omit media and nested forwards without resolving their resources.
+- Treat forwarded text and nicknames as redacted temporary references; keep them out of the sender's observed text and native persistent input history.
+- Make forward-reading turns tool-free, including call-time denial of guarded tools and direct computer/workspace entry points. Ordinary administrator turns retain their existing permissions.
+- Give specific feedback for unavailable records and quoted cards; preserve cancellation and recheck authorization after retrieval.
+- Block unresolved QQ quotes and disable native remote fallback on validated quote chains so nested forwards cannot bypass the new boundary.
+- Reject the incompatible empty-tool `skills_like` runner mode with a clear setting hint; current `full` mode remains supported.
+
 ## 0.3.3 — 2026-10-23
 
 - Send a short progress notice before an authorized private administrator's Codex task, once per incoming event even with concurrent tool calls.

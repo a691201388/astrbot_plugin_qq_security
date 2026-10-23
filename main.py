@@ -14,7 +14,7 @@ from astrbot.api.event import filter
 from astrbot.api.star import Star, StarTools, register
 from astrbot.core.agent.tool import ToolSet
 from astrbot.core.astr_agent_context import AgentContextWrapper, AstrAgentContext
-from astrbot.core.message.components import At, Face, Image, Plain, Reply
+from astrbot.core.message.components import At, Face, Forward, Image, Plain, Reply
 from astrbot.core.message.message_event_result import MessageChain
 from astrbot.core.star.filter.command import CommandFilter
 from astrbot.core.star.filter.command_group import CommandGroupFilter
@@ -22,6 +22,7 @@ from astrbot.core.star.filter.regex import RegexFilter
 from astrbot.core.utils.astrbot_path import get_astrbot_data_path, get_astrbot_temp_path
 
 from .admin_codex import AdminCodexRunner
+from .forwards import FORWARD_PROMPT, read_forward_text
 from .media import download_image
 from .observer import ObserverHub
 from .runtime import (
@@ -59,7 +60,7 @@ credentials. Group chats and all other senders retain the normal security policy
 """
 
 
-@register(PLUGIN_NAME, "a691201388", "QQ 权限、隐私及安全插件保护", "0.3.3")
+@register(PLUGIN_NAME, "a691201388", "QQ 权限、隐私及安全插件保护", "0.3.4")
 class QQSecurityPlugin(Star):
     observation_api_version = 2
     observation_excludes_social_commands = True
@@ -227,14 +228,87 @@ class QQSecurityPlugin(Star):
         if event.get_platform_name() != "aiocqhttp":
             return
         self.validate_references(event)
-        images = [part for part in self._components(event) if isinstance(part, Image)]
+        components = list(self._components(event))
+        if any(isinstance(part, Reply) and not part.chain for part in components):
+            event.stop_event()
+            await event.send(
+                event.plain_result(
+                    "这条引用暂时没能读取，请把要分析的文字、图片或转发卡片直接重新发送。"
+                )
+            )
+            return
+        has_forward = any(isinstance(part, Forward) for part in components)
+        if has_forward:
+            if not self.is_computer_admin(event):
+                event.stop_event()
+                await event.send(
+                    event.plain_result("合并转发读取目前仅在已授权管理员私聊开放。")
+                )
+                return
+            # Keep quoted forwards away from the native quoted-media resolver.
+            if any(isinstance(part, Reply) for part in components):
+                event.stop_event()
+                await event.send(
+                    event.plain_result("请直接发送合并转发卡片，不要通过引用发送。")
+                )
+                return
+            # AstrBot 4.29.1 leaves empty skills_like runners uninitialized.
+            if (
+                selected.get("agent_runner", {})
+                .get("config", {})
+                .get("misc", {})
+                .get("tool_schema_mode")
+                == "skills_like"
+            ):
+                event.stop_event()
+                await event.send(
+                    event.plain_result(
+                        "当前 AstrBot 的精简工具模式暂不支持转发阅读，"
+                        "请在本机管理端将“工具 Schema 模式”设为 full 后重试。"
+                    )
+                )
+                return
+            event.set_extra("qq_security_forward_read_only", True)
+        images = [part for part in components if isinstance(part, Image)]
         if len(images) > 4:
             raise PermissionError(
                 "At most four image references are accepted per message."
             )
-        for part in self._components(event):
-            if not isinstance(part, (Plain, At, Face, Reply, Image)):
+        for part in components:
+            if not isinstance(part, (Plain, At, Face, Reply, Image, Forward)):
                 raise PermissionError("This incoming media type is not enabled.")
+            if isinstance(part, Reply):
+                # The observer already captured reply_to. Native readers may now
+                # use only the validated embedded chain, never re-fetch by ID.
+                part.id = ""
+        if has_forward:
+            cards = [part for part in event.get_messages() if isinstance(part, Forward)]
+            try:
+                reference = await read_forward_text(
+                    event, cards, self.policy.redact, self.is_computer_admin
+                )
+                if not self.is_computer_admin(event):
+                    raise PermissionError("Administrator access was revoked.")
+            except Exception as error:
+                self.logger.warning("Forward reading failed: %s", type(error).__name__)
+                event.stop_event()
+                await event.send(
+                    event.plain_result(
+                        "这份合并转发暂时没读到正文，可能已过期或拉取失败。"
+                        "请重新转发，每次最多 3 张卡片；图片、文件和嵌套转发暂不展开。"
+                    )
+                )
+                return
+            event.set_extra("qq_security_forward_part", reference)
+            event.message_obj.message = [
+                Plain("[合并转发聊天记录：文字已附加]")
+                if isinstance(part, Forward)
+                else part
+                for part in event.get_messages()
+            ]
+            # Do not expose quoted commands to command filters or text observers.
+            if not event.message_str.strip():
+                event.message_str = "请根据上下文阅读这份转发聊天记录。"
         provenance = {}
         event.set_extra("qq_security_media", provenance)
         event.set_extra("qq_security_downloads", [])
@@ -538,6 +612,17 @@ class QQSecurityPlugin(Star):
         request.func_tool = ToolSet()
         try:
             self._wrap_send(event)
+            forward_read_only = bool(event.get_extra("qq_security_forward_read_only"))
+            if forward_read_only:
+                reference = event.get_extra("qq_security_forward_part")
+                if reference is None or not self.is_computer_admin(event):
+                    event.stop_event()
+                    return
+                original = []
+                if not any(
+                    part is reference for part in request.extra_user_content_parts
+                ):
+                    request.extra_user_content_parts.append(reference)
             identity = identity_from_event(event)
             if identity.platform == "aiocqhttp" and not event.get_extra(
                 "qq_security_chat_counted"
@@ -590,6 +675,8 @@ class QQSecurityPlugin(Star):
             )
             private_admin = self.is_computer_admin(event)
             policy_prompt = ADMIN_PROMPT if private_admin else GUARD_PROMPT
+            if forward_read_only:
+                policy_prompt = FORWARD_PROMPT
             if identity.platform == "aiocqhttp":
                 scope = "QQ private chat" if identity.private else "QQ group chat"
             else:
@@ -696,6 +783,8 @@ class QQSecurityPlugin(Star):
         Returns:
             JSON containing actual completion status and the Codex agent's output.
         """
+        if event.get_extra("qq_security_forward_read_only"):
+            return "Operation denied: forwarded conversation turns are read-only."
         if not self.is_computer_admin(event):
             return "Operation denied: a verified private QQ administrator is required."
         notice = event.get_extra("qq_security_codex_notice")
@@ -754,7 +843,9 @@ class QQSecurityPlugin(Star):
             name(string): Relative data-file name inside the restricted workspace.
         """
         identity = identity_from_event(event)
-        if self.policy.authorize(identity, "workspace_read"):
+        if event.get_extra("qq_security_forward_read_only") or self.policy.authorize(
+            identity, "workspace_read"
+        ):
             return "Operation denied."
         try:
             result = SafeWorkspace(
@@ -774,7 +865,9 @@ class QQSecurityPlugin(Star):
             content(string): UTF-8 file content, limited to 64 KiB.
         """
         identity = identity_from_event(event)
-        if self.policy.authorize(identity, "workspace_write"):
+        if event.get_extra("qq_security_forward_read_only") or self.policy.authorize(
+            identity, "workspace_write"
+        ):
             return "Operation denied."
         try:
             result = SafeWorkspace(
@@ -789,7 +882,9 @@ class QQSecurityPlugin(Star):
     async def qq_guard_list(self, event):
         """List text data files in this allowed QQ user's private workspace."""
         identity = identity_from_event(event)
-        if self.policy.authorize(identity, "workspace_list"):
+        if event.get_extra("qq_security_forward_read_only") or self.policy.authorize(
+            identity, "workspace_list"
+        ):
             return "Operation denied."
         result = SafeWorkspace(
             self.data_dir / "workspaces" / self.actor(identity)
