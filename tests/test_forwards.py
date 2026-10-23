@@ -12,33 +12,6 @@ from astrbot.core.provider.entities import ProviderRequest
 
 from astrbot_plugin_qq_security.runtime import GuardedTool, identity_from_event
 
-from .test_runtime import Event
-
-
-@pytest.fixture
-def forwarded(plugin):
-    plugin.config["admin_codex_enabled"] = True
-    plugin.context._config["admins_id"] = ["123456789"]
-    event = Event(text="")
-    event.message_obj.message = [Forward(id="synthetic-forward-id")]
-    event.bot = SimpleNamespace(
-        call_action=AsyncMock(
-            return_value={
-                "messages": [
-                    {
-                        "sender": {"nickname": "Alice"},
-                        "message": [{"type": "text", "data": {"text": "周六打游戏"}}],
-                    },
-                    {
-                        "sender": {"nickname": "Bob"},
-                        "message": [{"type": "text", "data": {"text": "我也来"}}],
-                    },
-                ]
-            }
-        )
-    )
-    return event
-
 
 @pytest.mark.asyncio
 async def test_forward_is_read_as_temporary_data_without_changing_sender(
@@ -91,7 +64,10 @@ async def test_forward_retrieval_requires_current_private_admin(
 
 
 @pytest.mark.asyncio
-async def test_forward_never_follows_attachments_or_nested_records(plugin, forwarded):
+async def test_depth_zero_does_not_follow_attachments_or_nested_records(
+    plugin, forwarded
+):
+    plugin.config["forward_max_depth"] = 0
     forwarded.bot.call_action.return_value = {
         "data": {
             "messages": [
@@ -229,13 +205,15 @@ async def test_forward_limits_are_visible_and_do_not_store_all_nodes(plugin, for
 
 
 @pytest.mark.asyncio
-async def test_reply_to_forward_is_not_sent_to_native_attachment_resolver(
+async def test_reply_to_forward_is_replaced_before_native_attachment_resolution(
     plugin, forwarded
 ):
     forwarded.message_obj.message = [Reply(id="456", chain=forwarded.get_messages())]
     await plugin.prepare_pipeline(forwarded, plugin.context._config)
-    assert forwarded.is_stopped()
-    forwarded.bot.call_action.assert_not_awaited()
+    assert not forwarded.is_stopped()
+    forwarded.bot.call_action.assert_awaited_once()
+    assert forwarded.get_extra("qq_security_forward_read_only")
+    assert all(isinstance(part, Plain) for part in forwarded.get_messages())
 
 
 @pytest.mark.asyncio

@@ -60,7 +60,7 @@ credentials. Group chats and all other senders retain the normal security policy
 """
 
 
-@register(PLUGIN_NAME, "a691201388", "QQ 权限、隐私及安全插件保护", "0.3.4")
+@register(PLUGIN_NAME, "a691201388", "QQ 权限、隐私及安全插件保护", "0.3.5")
 class QQSecurityPlugin(Star):
     observation_api_version = 2
     observation_excludes_social_commands = True
@@ -168,6 +168,32 @@ class QQSecurityPlugin(Star):
                 pending.extend(component.chain)
             yield component
 
+    def can_read_forward(self, event):
+        """Authorize only a private administrator or an explicitly woken allowed group.
+
+        Args:
+            event: Current authenticated transport event, checked again after awaits.
+
+        Returns:
+            Whether this event may read forwarded text, without granting tools.
+        """
+        identity = identity_from_event(event)
+        if identity.platform != "aiocqhttp":
+            return False
+        if identity.private and not identity.group:
+            return self.is_computer_admin(event)
+        groups = self.config.get("forward_group_ids", [])
+        return (
+            not identity.private
+            and bool(event.is_at_or_wake_command)
+            and all(
+                re.fullmatch(r"[1-9][0-9]{4,19}", value)
+                for value in (identity.sender, identity.account, identity.group)
+            )
+            and isinstance(groups, list)
+            and identity.group in {str(value) for value in groups[:32]}
+        )
+
     def validate_references(self, event):
         provenance = event.get_extra("qq_security_media") or {}
         for component in self._components(event):
@@ -239,17 +265,15 @@ class QQSecurityPlugin(Star):
             return
         has_forward = any(isinstance(part, Forward) for part in components)
         if has_forward:
-            if not self.is_computer_admin(event):
+            if identity.group and not event.is_at_or_wake_command:
                 event.stop_event()
-                await event.send(
-                    event.plain_result("合并转发读取目前仅在已授权管理员私聊开放。")
-                )
                 return
-            # Keep quoted forwards away from the native quoted-media resolver.
-            if any(isinstance(part, Reply) for part in components):
+            if not self.can_read_forward(event):
                 event.stop_event()
                 await event.send(
-                    event.plain_result("请直接发送合并转发卡片，不要通过引用发送。")
+                    event.plain_result(
+                        "当前会话未开放转发阅读，请在已启用的群里唤醒我，或由管理员私聊发送。"
+                    )
                 )
                 return
             # AstrBot 4.29.1 leaves empty skills_like runners uninitialized.
@@ -269,6 +293,17 @@ class QQSecurityPlugin(Star):
                 )
                 return
             event.set_extra("qq_security_forward_read_only", True)
+            if not event.get_extra("qq_security_chat_counted"):
+                try:
+                    self.ledger.check_message(
+                        self.actor(identity),
+                        limit=self.config.get("chat_messages_per_minute", 10),
+                    )
+                except PermissionError:
+                    event.stop_event()
+                    await event.send(event.plain_result("请求较频繁，请稍后再聊。"))
+                    return
+                event.set_extra("qq_security_chat_counted", True)
         images = [part for part in components if isinstance(part, Image)]
         if len(images) > 4:
             raise PermissionError(
@@ -282,33 +317,47 @@ class QQSecurityPlugin(Star):
                 # use only the validated embedded chain, never re-fetch by ID.
                 part.id = ""
         if has_forward:
-            cards = [part for part in event.get_messages() if isinstance(part, Forward)]
+            cards = [part for part in reversed(components) if isinstance(part, Forward)]
+            forward_replies = set()
+            for part in reversed(components):
+                if isinstance(part, Reply) and any(
+                    isinstance(child, Forward) or id(child) in forward_replies
+                    for child in part.chain or []
+                ):
+                    forward_replies.add(id(part))
             try:
                 reference = await read_forward_text(
-                    event, cards, self.policy.redact, self.is_computer_admin
+                    event,
+                    cards,
+                    self.policy.redact,
+                    self.can_read_forward,
+                    max_depth=self.config.get("forward_max_depth", 3),
                 )
-                if not self.is_computer_admin(event):
-                    raise PermissionError("Administrator access was revoked.")
+                if not self.can_read_forward(event):
+                    raise PermissionError("Forward reading access was revoked.")
             except Exception as error:
                 self.logger.warning("Forward reading failed: %s", type(error).__name__)
                 event.stop_event()
                 await event.send(
                     event.plain_result(
                         "这份合并转发暂时没读到正文，可能已过期或拉取失败。"
-                        "请重新转发，每次最多 3 张卡片；图片、文件和嵌套转发暂不展开。"
+                        "请重新转发，每次最多 3 张卡片；图片和文件暂不展开。"
                     )
                 )
                 return
             event.set_extra("qq_security_forward_part", reference)
             event.message_obj.message = [
                 Plain("[合并转发聊天记录：文字已附加]")
-                if isinstance(part, Forward)
+                if isinstance(part, Forward) or id(part) in forward_replies
                 else part
                 for part in event.get_messages()
             ]
             # Do not expose quoted commands to command filters or text observers.
             if not event.message_str.strip():
                 event.message_str = "请根据上下文阅读这份转发聊天记录。"
+            images = [
+                part for part in self._components(event) if isinstance(part, Image)
+            ]
         provenance = {}
         event.set_extra("qq_security_media", provenance)
         event.set_extra("qq_security_downloads", [])
@@ -615,7 +664,7 @@ class QQSecurityPlugin(Star):
             forward_read_only = bool(event.get_extra("qq_security_forward_read_only"))
             if forward_read_only:
                 reference = event.get_extra("qq_security_forward_part")
-                if reference is None or not self.is_computer_admin(event):
+                if reference is None or not self.can_read_forward(event):
                     event.stop_event()
                     return
                 original = []

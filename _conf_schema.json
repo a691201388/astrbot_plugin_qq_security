@@ -60,6 +60,19 @@
     "default": 2,
     "hint": "同一 QQ 同时最多一个绘图请求；排队失败不会自动重试。"
   },
+  "forward_group_ids": {
+    "description": "允许唤醒后读取转发的 QQ 群",
+    "type": "list",
+    "items": {"type": "string"},
+    "default": [],
+    "hint": "最多 32 个群。仅在这些群被 @ 或现有唤醒词唤醒时读取直接或引用的转发卡片；不会开启被动观察，也不授予电脑操作权限。"
+  },
+  "forward_max_depth": {
+    "description": "转发最多展开的嵌套层数",
+    "type": "int",
+    "default": 3,
+    "hint": "范围 0–5，默认 3；最外层卡片不计入。0 只读外层。每轮最多 12 次读取、100 条记录、16000 字正文，总时限 12 秒；遇到上限或重复循环引用会明确提示。"
+  },
   "observe_admin_private": {
     "description": "允许观察管理员 QQ 私聊（试用）",
     "type": "bool",

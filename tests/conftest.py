@@ -41,3 +41,35 @@ def pytest_sessionfinish():
     else:
         os.environ["ASTRBOT_ROOT"] = _previous
     _root.cleanup()
+
+
+@pytest.fixture
+def forwarded(plugin):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    from astrbot.core.message.components import Forward
+
+    from .test_runtime import Event
+
+    plugin.config["admin_codex_enabled"] = True
+    plugin.context._config["admins_id"] = ["123456789"]
+    event = Event(text="")
+    event.message_obj.message = [Forward(id="synthetic-forward-id")]
+    event.bot = SimpleNamespace(
+        call_action=AsyncMock(
+            return_value={
+                "messages": [
+                    {
+                        "sender": {"nickname": "Alice"},
+                        "message": [{"type": "text", "data": {"text": "周六打游戏"}}],
+                    },
+                    {
+                        "sender": {"nickname": "Bob"},
+                        "message": [{"type": "text", "data": {"text": "我也来"}}],
+                    },
+                ]
+            }
+        )
+    )
+    return event

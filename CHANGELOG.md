@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.3.5 — 2026-10-23
+
+- Read nested forward references and inline nodes with a configurable depth limit (default 3, range 0–5, excluding the outer card).
+- Share the existing record, segment, text and total-time budgets across all levels; cap external reads at 12, skip cycles and duplicates, and label unavailable or truncated nested content.
+- Add an independent, empty-by-default group allowlist for text reading after native wake. Group members gain no computer access or passive-observation permission.
+- Accept validated quoted forward cards and replace their quote chains before native attachment resolution, keeping unresolved quotes blocked.
+- Check chat quota before fetching and recheck current authorization around each external read and before model preparation. Forward-reading turns retain the existing tool-free, temporary-reference boundary.
+
 ## 0.3.4 — 2026-10-23
 
 - Read directly received merged-forward text only for the current verified private QQ administrator, through the matching OneBot account.
