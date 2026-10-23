@@ -1,7 +1,9 @@
 """Regression coverage for actual AstrBot lifecycle and wire serialization."""
 
+import socket
 from types import SimpleNamespace
 
+import aiohttp
 import pytest
 from astrbot.core.agent.message import TextPart
 from astrbot.core.agent.tool import ToolSet
@@ -18,6 +20,50 @@ from astrbot.core.utils.active_event_registry import active_event_registry
 from astrbot_plugin_qq_security.runtime import LifecycleGuard, bot_scope
 
 from .test_runtime import Event, Manager
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["dns", "timeout", "private_dns"])
+async def test_image_fetch_errors_stop_turn_with_accurate_safe_feedback(
+    plugin, monkeypatch, failure
+):
+    cause = (
+        PermissionError("private target https://private.invalid/secret")
+        if failure == "private_dns"
+        else socket.gaierror(-2, "unresolved https://private.invalid/secret")
+    )
+    error = (
+        TimeoutError("https://private.invalid/secret")
+        if failure == "timeout"
+        else aiohttp.ClientConnectorDNSError(
+            SimpleNamespace(host="gchat.qpic.cn", port=443, ssl=True), cause
+        )
+    )
+
+    async def download(url):
+        raise error
+
+    monkeypatch.setattr(plugin, "_download_media", download)
+    event = Event()
+    event.message_obj.message = [Image.fromURL("https://gchat.qpic.cn/example")]
+    stage = PreProcessStage()
+    stage.config = {}
+    await plugin.initialize()
+    try:
+        await stage.process(event)
+        assert event.is_stopped()
+        assert len(event.sent) == 1
+        text = "".join(
+            part.text for part in event.sent[0].chain if isinstance(part, Plain)
+        )
+        assert "private.invalid" not in text
+        if failure == "private_dns":
+            assert "安全检查" in text
+        else:
+            assert "图片" in text and "下载失败" in text
+            assert "安全检查" not in text
+    finally:
+        await plugin.terminate()
 
 
 @pytest.mark.asyncio

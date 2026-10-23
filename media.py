@@ -13,9 +13,14 @@ from PIL import Image as PillowImage
 class PublicResolver(DefaultResolver):
     async def resolve(self, host, port=0, family=socket.AF_INET):
         addresses = await super().resolve(host, port, family)
-        if not addresses or any(
-            not ipaddress.ip_address(address["host"]).is_global for address in addresses
-        ):
+        # A blocked AAAA answer must not discard a usable public A answer.
+        # Return only checked candidates so the connector cannot try a private IP.
+        addresses = [
+            address
+            for address in addresses
+            if ipaddress.ip_address(address["host"]).is_global
+        ]
+        if not addresses:
             raise PermissionError("Private or special-use image address denied.")
         return addresses
 

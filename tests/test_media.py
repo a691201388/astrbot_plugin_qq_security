@@ -1,5 +1,6 @@
 """Network-boundary tests use synthetic responses without real requests."""
 
+import socket
 from types import SimpleNamespace
 
 import pytest
@@ -11,7 +12,8 @@ from astrbot_plugin_qq_security.security import SecurityPolicy
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "address", ["127.0.0.1", "192.168.1.1", "169.254.169.254", "::1"]
+    "address",
+    ["127.0.0.1", "192.168.1.1", "169.254.169.254", "::1", "2001:2::9a"],
 )
 async def test_official_hostname_cannot_resolve_to_private_targets(
     monkeypatch, address
@@ -24,6 +26,43 @@ async def test_official_hostname_cannot_resolve_to_private_targets(
     try:
         with pytest.raises(PermissionError):
             await resolver.resolve("gchat.qpic.cn", 443)
+    finally:
+        await resolver.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "addresses,expected",
+    [
+        (["8.8.8.8", "2001:2::9a"], ["8.8.8.8"]),
+        (["::1", "8.8.8.8"], ["8.8.8.8"]),
+        (["192.168.1.1", "2606:4700:4700::1111"], ["2606:4700:4700::1111"]),
+        (["8.8.8.8", "2606:4700:4700::1111"], ["8.8.8.8", "2606:4700:4700::1111"]),
+    ],
+)
+async def test_mixed_dns_answers_connect_only_to_public_candidates(
+    monkeypatch, addresses, expected
+):
+    async def resolve(self, host, port=0, family=0):
+        return [
+            {
+                "hostname": host,
+                "host": address,
+                "port": port,
+                "family": socket.AF_INET6 if ":" in address else socket.AF_INET,
+                "proto": 0,
+                "flags": socket.AI_NUMERICHOST | socket.AI_NUMERICSERV,
+            }
+            for address in addresses
+        ]
+
+    monkeypatch.setattr(DefaultResolver, "resolve", resolve)
+    resolver = PublicResolver()
+    try:
+        result = await resolver.resolve("gchat.qpic.cn", 443, socket.AF_UNSPEC)
+        assert [address["host"] for address in result] == expected
+        assert all(address["hostname"] == "gchat.qpic.cn" for address in result)
+        assert all(address["port"] == 443 for address in result)
     finally:
         await resolver.close()
 

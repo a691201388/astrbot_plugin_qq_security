@@ -7,6 +7,7 @@ import sqlite3
 from contextlib import contextmanager, nullcontext, suppress
 from contextvars import ContextVar
 
+import aiohttp
 from astrbot.core.agent.tool import FunctionTool
 from astrbot.core.message.message_event_result import MessageChain
 from astrbot.core.platform.message_type import MessageType
@@ -178,10 +179,25 @@ class PipelineGuard:
                     await plugin.guard_message(event)
             except Exception as error:
                 event.stop_event()
-                plugin.logger.error("Security media blocked: %s", type(error).__name__)
+                cause = getattr(error, "os_error", None)
+                network_error = isinstance(
+                    error,
+                    (
+                        aiohttp.ClientConnectionError,
+                        aiohttp.ClientPayloadError,
+                        TimeoutError,
+                    ),
+                ) and not isinstance(cause, PermissionError)
+                plugin.logger.error(
+                    "Security media stopped: %s (cause: %s)",
+                    type(error).__name__,
+                    type(cause).__name__ if cause is not None else "none",
+                )
                 await event.send(
                     event.plain_result(
-                        "消息未通过安全检查，请使用 QQ 图片或在本机管理端检查设置。"
+                        "图片下载失败，请稍后重试；也可以把引用的图片重新发送。"
+                        if network_error
+                        else "消息未通过安全检查，请使用 QQ 图片或在本机管理端检查设置。"
                     )
                 )
                 return
