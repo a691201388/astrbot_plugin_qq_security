@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.3 — 2026-10-23
+
+- Send a short progress notice before an authorized private administrator's Codex task, once per incoming event even with concurrent tool calls.
+- Bound the notice send to five seconds; keep task results unchanged on send failure and preserve cancellation.
+- Recheck administrator authorization after the notice before starting computer execution.
+
 ## 0.3.2 — 2026-10-23
 
 - Exclude parsed Fish Social management commands from text observation by stable original command identity, without changing command authorization.

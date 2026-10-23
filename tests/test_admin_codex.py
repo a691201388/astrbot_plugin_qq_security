@@ -1,5 +1,7 @@
 """Verify that unrestricted Codex execution is limited to opted-in QQ admins."""
 
+import asyncio
+import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -124,3 +126,144 @@ async def test_runtime_scope_uses_transport_metadata_even_when_text_claims_priva
             in request.system_prompt
         )
         assert not plugin.is_computer_admin(event)
+
+
+@pytest.fixture
+def notice_plugin(plugin, monkeypatch):
+    plugin.config["admin_codex_enabled"] = True
+    plugin.context._config["admins_id"] = ["123456789"]
+
+    async def run(actor, task, *, working_directory, model):
+        return {"ok": True, "output": "Completed: " + task}
+
+    # The external CLI boundary is replaced; authorization and send wrappers are real.
+    monkeypatch.setattr(plugin.admin_codex, "run", run)
+    return plugin
+
+
+@pytest.mark.asyncio
+async def test_computer_task_sends_notice_before_running_and_keeps_result(
+    notice_plugin, monkeypatch
+):
+    event = Event()
+    notice_plugin._wrap_send(event)
+    notices_at_start = []
+
+    async def run(actor, task, *, working_directory, model):
+        notices_at_start.extend(event.sent)
+        return {"ok": True, "output": "Actual task result"}
+
+    monkeypatch.setattr(notice_plugin.admin_codex, "run", run)
+    result = await notice_plugin.qq_guard_codex(event, "inspect plugin")
+    assert len(notices_at_start) == 1
+    assert notices_at_start[0].get_plain_text().strip()
+    assert json.loads(result) == {"ok": True, "output": "Actual task result"}
+
+
+@pytest.mark.asyncio
+async def test_notice_is_once_per_event_including_concurrent_tool_calls(
+    notice_plugin, monkeypatch
+):
+    event = Event()
+    notices_at_start = []
+
+    async def run(actor, task, *, working_directory, model):
+        notices_at_start.append(len(event.sent))
+        return {"ok": True}
+
+    monkeypatch.setattr(notice_plugin.admin_codex, "run", run)
+    await asyncio.gather(
+        notice_plugin.qq_guard_codex(event, "first task"),
+        notice_plugin.qq_guard_codex(event, "second task"),
+    )
+    assert len(event.sent) == 1
+    assert notices_at_start == [1, 1]
+    following = Event()
+    await notice_plugin.qq_guard_codex(following, "new message task")
+    assert len(following.sent) == 1
+
+
+@pytest.mark.asyncio
+async def test_notice_send_failure_does_not_abort_or_retry_computer_task(notice_plugin):
+    event = Event()
+    attempts = []
+
+    async def failed_send(message):
+        attempts.append(message)
+        raise OSError("synthetic transport failure")
+
+    event.send = failed_send
+    for task in ("first", "second"):
+        result = await notice_plugin.qq_guard_codex(event, task)
+        assert json.loads(result)["output"] == "Completed: " + task
+    assert len(attempts) == 1
+
+
+@pytest.mark.asyncio
+async def test_stalled_notice_is_bounded_before_computer_task(
+    notice_plugin, monkeypatch
+):
+    import astrbot_plugin_qq_security.main as module
+
+    monkeypatch.setattr(module, "ADMIN_CODEX_NOTICE_TIMEOUT", 0.01, raising=False)
+    event = Event()
+    started = []
+    cancelled = []
+
+    async def stalled_send(message):
+        started.append(message)
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cancelled.append(True)
+
+    event.send = stalled_send
+    result = await asyncio.wait_for(
+        notice_plugin.qq_guard_codex(event, "inspect"), timeout=1
+    )
+    assert len(started) == 1 and cancelled == [True]
+    assert json.loads(result)["ok"] is True
+
+
+@pytest.mark.asyncio
+async def test_notice_cancellation_does_not_start_computer_task(notice_plugin):
+    event = Event()
+
+    async def cancelled_send(message):
+        raise asyncio.CancelledError
+
+    event.send = cancelled_send
+    with pytest.raises(asyncio.CancelledError):
+        await notice_plugin.qq_guard_codex(event, "inspect")
+
+
+@pytest.mark.asyncio
+async def test_permissions_are_rechecked_after_notice_send(notice_plugin):
+    event = Event()
+
+    async def revoke_during_send(message):
+        notice_plugin.context._config["admins_id"] = []
+
+    event.send = revoke_during_send
+    result = await notice_plugin.qq_guard_codex(event, "inspect")
+    assert "denied" in result.lower()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "denial", ["member", "group", "disabled", "revoked", "emergency"]
+)
+async def test_denied_computer_task_never_sends_progress_notice(notice_plugin, denial):
+    event = Event(
+        sender="999999999" if denial == "member" else "123456789",
+        group="111111" if denial == "group" else "",
+    )
+    if denial == "disabled":
+        notice_plugin.config["admin_codex_enabled"] = False
+    elif denial == "revoked":
+        notice_plugin.context._config["admins_id"] = []
+    elif denial == "emergency":
+        notice_plugin.config["emergency_stop"] = True
+    result = await notice_plugin.qq_guard_codex(event, "inspect")
+    assert "denied" in result.lower()
+    assert event.sent == []
