@@ -38,6 +38,6 @@ Interfaces: consume Task 1 helpers; no new external tool.
 - [x] Observe failure, implement pipeline normalization and private Codex handoff.
 - [x] Run full suite and Ruff; review the complete diff in fresh context.
 - [x] Backup, install/reload and replay actual ZIP without model/QQ sends.
-- [ ] Commit and push existing codex/fish-social-events branch, verify hashes.
+- [x] Commit and push existing codex/fish-social-events branch, verify hashes.
 
 Already-authorized live installation and security-plugin GitHub updates apply.
