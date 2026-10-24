@@ -25,19 +25,19 @@ then private-only metadata injection and Codex handoff.
 Files: new attachments.py, tests/test_attachments.py.
 Interfaces: PendingZip(File), AttachmentAdapterGuard.install/restore,
 ZipInbox.receive(event, reference, actor, allowed), recent(actor), lock(actor).
-- [ ] Write failing tests for direct and quoted conversion, bounded copy, rejection,
+- [x] Write failing tests for direct and quoted conversion, bounded copy, rejection,
       authority revocation, expiration, actor isolation and deduplication.
-- [ ] Observe failure; implement inert adapter hook and bounded local inbox.
-- [ ] Run pytest tests/test_attachments.py; expect all pass. Commit implementation.
+- [x] Observe failure; implement inert adapter hook and bounded local inbox.
+- [x] Run pytest tests/test_attachments.py; expect all pass. Commit implementation.
 
 ### Task 2: Integrate and verify
 Files: main.py, tests/test_attachments.py, README.md, CHANGELOG.md, metadata.yaml.
 Interfaces: consume Task 1 helpers; no new external tool.
-- [ ] Write failing integration tests for private receipt, rejected group/nonadmin,
+- [x] Write failing integration tests for private receipt, rejected group/nonadmin,
       next-turn metadata, quoted source validation and Codex path handoff.
-- [ ] Observe failure, implement pipeline normalization and private Codex handoff.
-- [ ] Run full suite and Ruff; review the complete diff in fresh context.
-- [ ] Backup, install/reload and replay actual ZIP without model/QQ sends.
+- [x] Observe failure, implement pipeline normalization and private Codex handoff.
+- [x] Run full suite and Ruff; review the complete diff in fresh context.
+- [x] Backup, install/reload and replay actual ZIP without model/QQ sends.
 - [ ] Commit and push existing codex/fish-social-events branch, verify hashes.
 
 Already-authorized live installation and security-plugin GitHub updates apply.

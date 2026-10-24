@@ -12,6 +12,7 @@ from urllib.parse import unquote, urlsplit
 
 from astrbot.api.event import filter
 from astrbot.api.star import Star, StarTools, register
+from astrbot.core.agent.message import TextPart
 from astrbot.core.agent.tool import ToolSet
 from astrbot.core.astr_agent_context import AgentContextWrapper, AstrAgentContext
 from astrbot.core.message.components import At, Face, Forward, Image, Plain, Reply
@@ -22,6 +23,7 @@ from astrbot.core.star.filter.regex import RegexFilter
 from astrbot.core.utils.astrbot_path import get_astrbot_data_path, get_astrbot_temp_path
 
 from .admin_codex import AdminCodexRunner
+from .attachments import AttachmentAdapterGuard, PendingZip, ZipInbox
 from .forwards import FORWARD_PROMPT, read_forward_text
 from .media import download_image
 from .observer import ObserverHub
@@ -60,7 +62,7 @@ credentials. Group chats and all other senders retain the normal security policy
 """
 
 
-@register(PLUGIN_NAME, "a691201388", "QQ 权限、隐私及安全插件保护", "0.3.8")
+@register(PLUGIN_NAME, "a691201388", "QQ 权限、隐私及安全插件保护", "0.3.9")
 class QQSecurityPlugin(Star):
     observation_api_version = 2
     observation_excludes_social_commands = True
@@ -82,6 +84,9 @@ class QQSecurityPlugin(Star):
         self.salt = salt_file.read_bytes()
         self.lifecycle = LifecycleGuard(context._star_manager, PLUGIN_NAME)
         self.pipeline = PipelineGuard(self)
+        self.attachment_adapter = AttachmentAdapterGuard()
+        self.zip_inbox = ZipInbox(self.data_dir / "zip_inbox")
+        self._zip_closed = False
         self.session_policy = SessionPolicyGuard()
         self.media_roots = [
             Path(get_astrbot_temp_path()) / "astrbot_plugin_codex_provider",
@@ -105,8 +110,11 @@ class QQSecurityPlugin(Star):
         self.lifecycle.install()
         self.session_policy.install()
         self.pipeline.install()
+        self.attachment_adapter.install()
 
     async def terminate(self):
+        self._zip_closed = True
+        self.attachment_adapter.restore()
         self.observers.sinks.clear()
         await self.admin_codex.close()
         self.pipeline.restore()
@@ -255,6 +263,80 @@ class QQSecurityPlugin(Star):
             return
         self.validate_references(event)
         components = list(self._components(event))
+        attachments = [part for part in components if isinstance(part, PendingZip)]
+        if attachments:
+
+            def allowed():
+                return (
+                    not self._zip_closed
+                    and self.is_computer_admin(event)
+                    and not event.get_extra("qq_security_forward_read_only")
+                )
+
+            if not allowed() or any(isinstance(part, Forward) for part in components):
+                event.stop_event()
+                await event.send(
+                    event.plain_result(
+                        "ZIP 附件仅对已验证的管理员私聊开放，请单独发送文件。"
+                    )
+                )
+                return
+            if len(attachments) != 1:
+                event.stop_event()
+                await event.send(
+                    event.plain_result(
+                        "每次请只发送或引用 1 个 ZIP，单个不超过 32 MB。"
+                    )
+                )
+                return
+            try:
+                record = await self.zip_inbox.receive(
+                    event, attachments[0], self.actor(identity), allowed
+                )
+            except Exception as error:
+                self.logger.warning(
+                    "Private ZIP reception failed: %s", type(error).__name__
+                )
+                event.stop_event()
+                if not allowed():
+                    message = "当前管理员附件权限已关闭，未接收 ZIP。"
+                elif isinstance(error, TimeoutError):
+                    message = "ZIP 下载超时，请稍后重新发送或引用这份文件。"
+                elif isinstance(error, ValueError) and "five active" in str(error):
+                    message = (
+                        "收件箱已有 5 个 ZIP，请在本机清理，或等 24 小时过期后再发送。"
+                    )
+                else:
+                    message = (
+                        "ZIP 暂未接收成功。请重新发送本人私聊上传的 ZIP，单个不超过 32 MB、"
+                        "不加密，最多 1000 个文件、展开后不超过 256 MB；过期文件需重新上传。"
+                    )
+                await event.send(event.plain_result(message))
+                return
+            receipt = Plain(
+                "[ZIP received; not extracted or imported] "
+                + json.dumps(
+                    {key: record[key] for key in ("id", "name", "size", "entries")},
+                    ensure_ascii=True,
+                )
+            )
+            for chain in [
+                event.get_messages(),
+                *[p.chain for p in components if isinstance(p, Reply) and p.chain],
+            ]:
+                for index, part in enumerate(chain):
+                    if isinstance(part, PendingZip):
+                        chain[index] = receipt
+            if not event.message_str.strip():
+                event.stop_event()
+                await event.send(
+                    event.plain_result(
+                        f"收到 ZIP 了（{record['size'] / 1024 / 1024:.1f} MB，{record['entries']} 个条目），"
+                        "已保存，尚未解压或导入。接下来直接告诉我怎么处理，24 小时内可引用刚才的压缩包。"
+                    )
+                )
+                return
+            components = list(self._components(event))
         if any(isinstance(part, Reply) and not part.chain for part in components):
             event.stop_event()
             await event.send(
@@ -725,6 +807,18 @@ class QQSecurityPlugin(Star):
                 )
             )
             private_admin = self.is_computer_admin(event)
+            if private_admin and not forward_read_only and not self._zip_closed:
+                inbox_context = self.zip_inbox.context(self.actor(identity))
+                if inbox_context:
+                    previous = event.get_extra("qq_security_zip_part")
+                    request.extra_user_content_parts = [
+                        part
+                        for part in request.extra_user_content_parts
+                        if part is not previous
+                    ]
+                    part = TextPart(text=inbox_context).mark_as_temp()
+                    request.extra_user_content_parts.append(part)
+                    event.set_extra("qq_security_zip_part", part)
             policy_prompt = ADMIN_PROMPT if private_admin else GUARD_PROMPT
             if forward_read_only:
                 policy_prompt = FORWARD_PROMPT
@@ -879,9 +973,16 @@ class QQSecurityPlugin(Star):
             ),
             None,
         )
-        result = await self.admin_codex.run(
-            self.actor(identity), task, working_directory=working_directory, model=model
-        )
+        actor = self.actor(identity)
+        async with self.zip_inbox.lock(actor):
+            if self._zip_closed or not self.is_computer_admin(event):
+                return (
+                    "Operation denied: a verified private QQ administrator is required."
+                )
+            task += self.zip_inbox.context(actor, paths=True)
+            result = await self.admin_codex.run(
+                actor, task, working_directory=working_directory, model=model
+            )
         return self.policy.redact(
             json.dumps(result, ensure_ascii=False), private_admin=True
         )

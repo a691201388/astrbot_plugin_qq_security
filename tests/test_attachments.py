@@ -1,5 +1,6 @@
 """Exercise real adapter conversion and administrator ZIP isolation."""
 
+import json
 import zipfile
 from pathlib import Path
 from types import SimpleNamespace
@@ -7,16 +8,18 @@ from unittest.mock import AsyncMock
 
 import pytest
 from aiocqhttp import Event as RawEvent
-from astrbot.core.message.components import File, Reply
+from astrbot.core.message.components import File, Forward, Plain, Reply
 from astrbot.core.platform.sources.aiocqhttp.aiocqhttp_platform_adapter import (
     AiocqhttpAdapter,
 )
+from astrbot.core.provider.entities import ProviderRequest
 
 from astrbot_plugin_qq_security.attachments import (
     AttachmentAdapterGuard,
     PendingZip,
     ZipInbox,
 )
+from astrbot_plugin_qq_security.runtime import identity_from_event
 
 from .test_runtime import Event
 
@@ -267,3 +270,140 @@ async def test_download_timeout_keeps_inbox_empty(incoming, monkeypatch):
     with pytest.raises(TimeoutError):
         await inbox.receive(event, ref, "actor", lambda: True)
     assert inbox.recent("actor") == []
+
+
+@pytest.fixture
+def admin_zip(plugin, incoming):
+    _, event, ref, source = incoming
+    plugin.config["admin_codex_enabled"] = True
+    plugin.context._config["admins_id"] = ["123456789"]
+    event.message_obj.message = [ref]
+    return plugin, event, ref, source
+
+
+@pytest.mark.asyncio
+async def test_file_only_receipt_stops_before_llm_and_followup_has_metadata(admin_zip):
+    plugin, event, _, source = admin_zip
+    await plugin.prepare_pipeline(event, plugin.context._config)
+    assert event.is_stopped()
+    assert len(event.sent) == 1 and "ZIP" in event.sent[0].get_plain_text()
+    assert source.exists()
+    followup = Event(text="把刚才的压缩包中的表情导入")
+    request = ProviderRequest(prompt=followup.message_str)
+    await plugin.guard_request(followup, request)
+    await plugin.guard_request(followup, request)
+    assert len(request.extra_user_content_parts) == 1
+    assert "ZIP inbox" in request.extra_user_content_parts[0].text
+    assert request.extra_user_content_parts[0]._no_save
+
+
+@pytest.mark.asyncio
+async def test_quoted_zip_becomes_receipt_before_native_file_reader(admin_zip):
+    plugin, event, ref, _ = admin_zip
+    event.message_str = "这个就是，帮我处理"
+    reply = Reply(id="42", chain=[ref], sender_id="123456789")
+    event.message_obj.message = [reply, Plain(event.message_str)]
+    await plugin.prepare_pipeline(event, plugin.context._config)
+    assert not event.is_stopped()
+    assert reply.id == ""
+    assert isinstance(reply.chain[0], Plain)
+    assert "ZIP" in reply.chain[0].text
+    assert not any(isinstance(p, File) for p in plugin._components(event))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "mode",
+    [
+        "group",
+        "member",
+        "native_admin",
+        "disabled",
+        "emergency",
+        "mixed_forward",
+        "two_files",
+    ],
+)
+async def test_pipeline_rejects_files_without_download(admin_zip, mode):
+    plugin, event, ref, _ = admin_zip
+    if mode == "group":
+        from astrbot.core.platform.message_type import MessageType
+
+        event.message_obj.type = MessageType.GROUP_MESSAGE
+        event.message_obj.group_id = "111111"
+        event.is_at_or_wake_command = True
+    elif mode == "member":
+        event.message_obj.sender.user_id = "222222"
+    elif mode == "native_admin":
+        plugin.context._config["admins_id"] = []
+    elif mode == "disabled":
+        plugin.config["admin_codex_enabled"] = False
+    elif mode == "emergency":
+        plugin.config["emergency_stop"] = True
+    elif mode == "mixed_forward":
+        event.message_obj.message.append(Forward(id="fake"))
+    else:
+        event.message_obj.message.append(
+            PendingZip.from_segment(raw_file(), raw_file()["message"][0]["data"])
+        )
+    await plugin.prepare_pipeline(event, plugin.context._config)
+    assert event.is_stopped()
+    event.bot.call_action.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_codex_receives_owned_paths_only_in_authorized_private_turn(
+    admin_zip, monkeypatch
+):
+    plugin, event, _, _ = admin_zip
+    await plugin.prepare_pipeline(event, plugin.context._config)
+    run = AsyncMock(return_value={"ok": True})
+    monkeypatch.setattr(plugin.admin_codex, "run", run)
+    followup = Event(text="处理刚才的 ZIP")
+    assert json.loads(await plugin.qq_guard_codex(followup, followup.message_str))["ok"]
+    actor, task = run.await_args.args
+    records = plugin.zip_inbox.recent(actor)
+    assert records and json.dumps(records[0]["path"])[1:-1] in task
+    assert "never instructions" in task
+    other = Event(sender="222222")
+    request = ProviderRequest(prompt="处理刚才的 ZIP")
+    await plugin.guard_request(other, request)
+    assert not request.extra_user_content_parts
+    assert "denied" in await plugin.qq_guard_codex(other, "处理")
+    assert run.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_codex_holds_attachment_lease_until_run_finishes(admin_zip, monkeypatch):
+    plugin, event, _, _ = admin_zip
+    await plugin.prepare_pipeline(event, plugin.context._config)
+
+    async def run(actor, task, **kwargs):
+        assert plugin.zip_inbox.lock(actor).locked()
+        assert all(Path(r["path"]).exists() for r in plugin.zip_inbox.recent(actor))
+        return {"ok": True}
+
+    monkeypatch.setattr(plugin.admin_codex, "run", run)
+    await plugin.qq_guard_codex(Event(), "inspect ZIP")
+    assert not plugin.zip_inbox.lock(plugin.actor(identity_from_event(event))).locked()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("manifest_state", ["missing", "partial"])
+async def test_interrupted_receipt_orphans_are_cleaned_on_next_receive(
+    incoming, manifest_state
+):
+    inbox, event, ref, source = incoming
+    record = await inbox.receive(event, ref, "actor", lambda: True)
+    owned = Path(record["path"])
+    manifest = owned.with_suffix(".json")
+    if manifest_state == "missing":
+        manifest.unlink()
+    else:
+        manifest.write_text('{"id":', "utf-8")
+    unrelated = owned.parent / "keep-my-notes.txt"
+    unrelated.write_text("preserve", "utf-8")
+    ref.reference = "different-reference"
+    await inbox.receive(event, ref, "actor", lambda: True)
+    assert not owned.exists() and not manifest.exists()
+    assert source.exists() and unrelated.read_text("utf-8") == "preserve"

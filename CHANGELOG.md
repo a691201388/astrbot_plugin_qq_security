@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.3.9 — 2026-10-24
+
+- Receive ZIPs sent or quoted in verified administrator private chats through NapCat's native `get_file`, without requiring the packet backend. A reversible adapter hook preserves the file segment and its source identity.
+- Store isolated, bounded copies and temporary metadata for follow-up requests; pass owned paths to the existing Codex tool. Receipt alone never extracts, imports, executes, or invokes a model.
+- Enforce one ZIP per turn, 32 MiB compressed, 1000 entries, 256 MiB declared expanded size, and reject encrypted or unsafe paths. Up to five files per actor remain eligible for 24 hours; expired copies are removed on the next receipt, serialized with Codex use.
+- Retain double-list private-admin authorization, emergency stop, revocation checks, and the tool-free forward boundary. Requires NapCat and AstrBot to share a local filesystem.
+
 ## 0.3.7 — 2026-10-23
 
 - Increase the total forward retrieval deadline from 12 to 45 seconds: live NapCat retrieval of nested records can exceed the previous deadline even when the card remains available.

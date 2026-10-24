@@ -196,7 +196,19 @@ class ZipInbox:
         async with self.lock(actor):
             authorize()
             now = time.time()
-            for old in self._records(actor):
+            records = self._records(actor)
+            directory = self.root / hashlib.sha256(actor.encode()).hexdigest()
+            valid_ids = {record["id"] for record in records}
+            # A killed process can leave a ZIP or partial manifest. Only remove
+            # our random-name files, while no receipt or Codex task holds them.
+            for owned in directory.glob("*"):
+                if (
+                    re.fullmatch(r"[a-f0-9]{32}\.(zip|json)", owned.name)
+                    and owned.stem not in valid_ids
+                    and (owned.is_file() or owned.is_symlink())
+                ):
+                    owned.unlink(missing_ok=True)
+            for old in records:
                 if now - old["created"] >= RETENTION_SECONDS:
                     owned = Path(old["path"])
                     owned.unlink(missing_ok=True)
@@ -239,7 +251,6 @@ class ZipInbox:
                 raise ValueError("NapCat download must be a regular local file.")
             if source.stat().st_size > MAX_BYTES:
                 raise ValueError("Downloaded ZIP exceeds the 32 MiB limit.")
-            directory = self.root / hashlib.sha256(actor.encode()).hexdigest()
             directory.mkdir(parents=True, exist_ok=True)
             attachment_id = secrets.token_hex(16)
             target = directory / f"{attachment_id}.zip"
