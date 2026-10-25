@@ -37,5 +37,5 @@ Produces: reversible command admission, silent event marker and guarded replies.
 - [x] Run focused tests. Expect all pass; update older tests only where this
   explicit policy intentionally changes their expected scope.
 - [x] Run full pytest, Ruff lint/format and git diff --check. Expect all pass.
-- [ ] Document limits, bump to 0.3.11, review with a fresh reviewer, commit and
+- [x] Document limits, bump to 0.3.11, review with a fresh reviewer, commit and
   push the development branch; package a distinct ZIP. Keep runtime unmodified.

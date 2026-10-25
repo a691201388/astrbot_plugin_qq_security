@@ -5,6 +5,8 @@ import re
 from astrbot.core.message.components import At, AtAll, Plain, Reply
 from astrbot.core.star.filter.command import CommandFilter
 from astrbot.core.star.filter.command_group import CommandGroupFilter
+from astrbot.core.star.filter.event_message_type import EventMessageTypeFilter
+from astrbot.core.star.filter.platform_adapter_type import PlatformAdapterTypeFilter
 from astrbot.core.star.filter.regex import RegexFilter
 
 from .runtime import identity_from_event
@@ -64,17 +66,22 @@ class CommandScopeGuard:
     def block_activated(self, event):
         if event.get_extra("qq_security_silent_command"):
             return True
-        if self.restricted(event) and any(
+        if any(
             isinstance(f, COMMAND_FILTERS)
             for handler in event.get_extra("activated_handlers") or []
             for f in handler.event_filters
         ):
-            self.deny(event)
-            return True
+            event.set_extra("qq_security_command_turn", True)
+            if self.restricted(event):
+                self.deny(event)
+                return True
         return False
 
     def suppress_reply(self, event, message):
         if event.get_extra("qq_security_silent_command"):
+            return True
+        if event.get_extra("qq_security_command_turn") and self.restricted(event):
+            self.deny(event)
             return True
         text = "".join(p.text for p in message.chain if isinstance(p, Plain))
         if SILENT_REPLY in text and self.restricted(event):
@@ -130,15 +137,26 @@ class CommandScopeGuard:
                 == "astrbot.builtin_stars.builtin_commands.main"
             ):
                 continue
+            command, matched = False, True
             for item in handler.event_filters:
-                if isinstance(item, (CommandFilter, CommandGroupFilter)) and awake:
-                    if any(
+                if isinstance(item, (CommandFilter, CommandGroupFilter)):
+                    command = True
+                    matched = awake and any(
                         normalized == name or normalized.startswith(name + " ")
                         for name in item.get_complete_command_names()
-                    ):
-                        return True
-                elif isinstance(item, RegexFilter) and item.regex.search(text):
-                    return True
+                    )
+                elif isinstance(item, RegexFilter):
+                    command = True
+                    matched = bool(item.regex.search(text))
+                elif type(item) in (EventMessageTypeFilter, PlatformAdapterTypeFilter):
+                    matched = item.filter(event, config)
+                # Do not execute custom plugin filters or parameter parsers here.
+                # Permission failures must also be silent, so permission filters
+                # intentionally do not exempt an otherwise matching command.
+                if not matched:
+                    break
+            if command and matched:
+                return True
         return False
 
     def install(self):
@@ -152,11 +170,11 @@ class CommandScopeGuard:
             if event.get_platform_name() == "aiocqhttp":
                 guard.plugin._wrap_send(event)
                 try:
-                    if guard.restricted(
-                        event, config
-                    ) and guard.matches_registered_command(event, config):
-                        guard.deny(event)
-                        return
+                    if guard.matches_registered_command(event, config):
+                        event.set_extra("qq_security_command_turn", True)
+                        if guard.restricted(event, config):
+                            guard.deny(event)
+                            return
                 except Exception as error:
                     guard.deny(event)
                     guard.plugin.logger.error(

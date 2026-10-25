@@ -10,7 +10,12 @@ from astrbot.core.pipeline.process_stage.method.star_request import StarRequestS
 from astrbot.core.pipeline.waking_check.stage import WakingCheckStage
 from astrbot.core.star.filter.command import CommandFilter
 from astrbot.core.star.filter.command_group import CommandGroupFilter
+from astrbot.core.star.filter.event_message_type import (
+    EventMessageType,
+    EventMessageTypeFilter,
+)
 from astrbot.core.star.filter.permission import PermissionType, PermissionTypeFilter
+from astrbot.core.star.filter.platform_adapter_type import PlatformAdapterTypeFilter
 from astrbot.core.star.filter.regex import RegexFilter
 from astrbot.core.star.session_plugin_manager import SessionPluginManager
 from astrbot.core.star.star import star_map
@@ -251,3 +256,74 @@ async def test_waking_wrapper_is_restored_on_termination(plugin):
     finally:
         await plugin.terminate()
     assert WakingCheckStage.process is original
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("restriction", ["command", "platform", "message_type"])
+async def test_combined_filters_do_not_swallow_unrelated_chat(
+    plugin, command_stage, restriction
+):
+    stage, register, effects = command_stage
+    selector = {
+        "command": make_command(),
+        "platform": PlatformAdapterTypeFilter("telegram"),
+        "message_type": EventMessageTypeFilter(EventMessageType.PRIVATE_MESSAGE),
+    }[restriction]
+    register([RegexFilter(".*"), selector])
+    event = Event(group="111111", text="/你好")
+    event.message_obj.message = [Plain("/你好")]
+    await plugin.initialize()
+    try:
+        await wake_and_dispatch(stage, event)
+        assert not event.is_stopped()
+        assert event.message_str == "你好"
+        assert not effects and not event.sent
+    finally:
+        await plugin.terminate()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("revoke", ["native", "whitelist"])
+@pytest.mark.parametrize("stream", [False, True])
+async def test_command_reply_rechecks_authority_after_handler_await(
+    plugin, command_stage, revoke, stream
+):
+    import asyncio
+
+    stage, register, effects = command_stage
+    entered, resume = asyncio.Event(), asyncio.Event()
+    md = register([make_command()], "astrbot.builtin_stars.builtin_commands.main")
+
+    async def delayed_command(event):
+        entered.set()
+        await resume.wait()
+        effects.append("finished")
+        if stream:
+
+            async def chunks():
+                yield MessageChain(chain=[Plain("command result")])
+
+            await event.send_streaming(chunks())
+        else:
+            await event.send(event.plain_result("command result"))
+
+    md.handler = delayed_command
+    event = Event(text="/help")
+    event.message_obj.message = [Plain("/help")]
+    await plugin.initialize()
+    task = asyncio.create_task(wake_and_dispatch(stage, event))
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=5)
+        if revoke == "native":
+            plugin.context._config["admins_id"] = []
+        else:
+            plugin.config["computer_qq_whitelist"] = []
+        resume.set()
+        await task
+        assert effects == ["finished"]
+        assert event.sent == []
+        assert event.is_stopped()
+    finally:
+        resume.set()
+        await task
+        await plugin.terminate()

@@ -595,6 +595,9 @@ class QQSecurityPlugin(Star):
                         message, private_admin=plugin.is_computer_admin(current_event)
                     )
                 except Exception:
+                    if current_event.get_extra("qq_security_command_turn"):
+                        plugin.command_scope.deny(current_event)
+                        return
                     safe = MessageChain(chain=[Plain("消息未通过安全检查。")])
                 record = plugin.observers.send_start(current_event, safe)
                 try:
@@ -721,23 +724,26 @@ class QQSecurityPlugin(Star):
             return
         if text.startswith("/"):
             command = text[1:].split(maxsplit=1)[0].lower() if text[1:] else ""
-            if self.command_scope.restricted(event):
-                # These built-in shortcuts can also be called without a handler.
-                # An unmatched slash utterance remains ordinary wake/chat input.
-                if command in {
-                    "help",
-                    "sid",
-                    "reset",
-                    "new",
-                    "stop",
-                    "qq_guard_status",
-                    "codex_image",
-                    "搜图",
-                    "鱼聊",
-                    "鱼聊忘记我",
-                    "plugin",
-                }:
+            # These built-in shortcuts can also be called without a handler.
+            # An unmatched slash utterance remains ordinary wake/chat input.
+            if command in {
+                "help",
+                "sid",
+                "reset",
+                "new",
+                "stop",
+                "qq_guard_status",
+                "codex_image",
+                "搜图",
+                "鱼聊",
+                "鱼聊忘记我",
+                "plugin",
+            }:
+                event.set_extra("qq_security_command_turn", True)
+                if self.command_scope.restricted(event):
                     self.command_scope.deny(event)
+                    return
+            if self.command_scope.restricted(event):
                 return
             if command == "搜图" and source_command:
                 return
