@@ -34,13 +34,13 @@ evaluation helpers/results live in this plan's ignored workspace and artifacts.
 **Interfaces:** Consumes guard_request(event, request), unchanged authorization and
 the previous pilot's frozen A0 requests. Produces revised system guidance only.
 
-- [ ] Record existing failing S16/S11 consumer outputs and passing security baseline.
-- [ ] Narrow group explanations and add shared visual-evidence guidance in main.py.
-- [ ] Run all security tests; expected: all pass, no new warnings.
-- [ ] Run at most 14 isolated candidate calls through guard_request and the existing
+- [x] Record existing failing S16/S11 consumer outputs and passing security baseline.
+- [x] Narrow group explanations and add shared visual-evidence guidance in main.py.
+- [x] Run all security tests; expected: all pass, no new warnings.
+- [x] Run at most 14 isolated candidate calls through guard_request and the existing
       transport; expected: relevant tutorials, honest image boundaries, real images
       usable, no tools, no QQ sends, no writes outside the evaluation root.
-- [ ] Inspect and record every result; block deployment on unresolved regressions.
-- [ ] Bump development version to 0.3.10, document limits, commit the local change.
-- [ ] Obtain one fresh whole-change review and address important findings before
+- [x] Inspect and record every result; block deployment on unresolved regressions.
+- [x] Bump development version to 0.3.10, document limits, commit the local change.
+- [x] Obtain one fresh whole-change review and address important findings before
       handing over a concrete patch and evidence. Do not deploy automatically.
