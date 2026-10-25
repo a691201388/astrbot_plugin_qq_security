@@ -24,6 +24,7 @@ from astrbot.core.utils.astrbot_path import get_astrbot_data_path, get_astrbot_t
 
 from .admin_codex import AdminCodexRunner
 from .attachments import AttachmentAdapterGuard, PendingZip, ZipInbox
+from .command_scope import COMMAND_SCOPE_PROMPT, SILENT_REPLY, CommandScopeGuard
 from .forwards import FORWARD_PROMPT, read_forward_text
 from .media import download_image
 from .observer import ObserverHub
@@ -74,7 +75,7 @@ when it matters to the user's request.
 """
 
 
-@register(PLUGIN_NAME, "a691201388", "QQ 权限、隐私及安全插件保护", "0.3.10")
+@register(PLUGIN_NAME, "a691201388", "QQ 权限、隐私及安全插件保护", "0.3.11")
 class QQSecurityPlugin(Star):
     observation_api_version = 2
     observation_excludes_social_commands = True
@@ -96,6 +97,7 @@ class QQSecurityPlugin(Star):
         self.salt = salt_file.read_bytes()
         self.lifecycle = LifecycleGuard(context._star_manager, PLUGIN_NAME)
         self.pipeline = PipelineGuard(self)
+        self.command_scope = CommandScopeGuard(self)
         self.attachment_adapter = AttachmentAdapterGuard()
         self.zip_inbox = ZipInbox(self.data_dir / "zip_inbox")
         self._zip_closed = False
@@ -122,6 +124,7 @@ class QQSecurityPlugin(Star):
         self.lifecycle.install()
         self.session_policy.install()
         self.pipeline.install()
+        self.command_scope.install()
         self.attachment_adapter.install()
 
     async def terminate(self):
@@ -130,6 +133,7 @@ class QQSecurityPlugin(Star):
         self.observers.sinks.clear()
         await self.admin_codex.close()
         self.pipeline.restore()
+        self.command_scope.restore()
         self.session_policy.restore()
         self.lifecycle.restore()
 
@@ -578,11 +582,15 @@ class QQSecurityPlugin(Star):
             plugin = self
 
             async def guarded_send(current_event, message):
+                if current_event.get_extra("qq_security_silent_command"):
+                    return
                 if message is None:
                     result = await original_send(None)
                     current_event.set_extra("qq_security_stream_closed", True)
                     return result
                 try:
+                    if plugin.command_scope.suppress_reply(current_event, message):
+                        return
                     safe = plugin.clean_chain(
                         message, private_admin=plugin.is_computer_admin(current_event)
                     )
@@ -636,6 +644,8 @@ class QQSecurityPlugin(Star):
             event: Message carrying transport-authenticated sender metadata.
         """
         identity = identity_from_event(event)
+        if self.command_scope.block_activated(event):
+            return
         self._namespace(event)
         try:
             if identity.platform == "aiocqhttp":
@@ -700,6 +710,9 @@ class QQSecurityPlugin(Star):
             )
             text = "/codex_image " + str(prompt)
         elif blocked_command:
+            if self.command_scope.restricted(event):
+                self.command_scope.deny(event)
+                return
             event.stop_event()
             self.ledger.audit(self.actor(identity), "chat_command", "denied")
             await event.send(
@@ -708,6 +721,24 @@ class QQSecurityPlugin(Star):
             return
         if text.startswith("/"):
             command = text[1:].split(maxsplit=1)[0].lower() if text[1:] else ""
+            if self.command_scope.restricted(event):
+                # These built-in shortcuts can also be called without a handler.
+                # An unmatched slash utterance remains ordinary wake/chat input.
+                if command in {
+                    "help",
+                    "sid",
+                    "reset",
+                    "new",
+                    "stop",
+                    "qq_guard_status",
+                    "codex_image",
+                    "搜图",
+                    "鱼聊",
+                    "鱼聊忘记我",
+                    "plugin",
+                }:
+                    self.command_scope.deny(event)
+                return
             if command == "搜图" and source_command:
                 return
             if command in {"鱼聊", "鱼聊忘记我"} and social_command:
@@ -755,6 +786,9 @@ class QQSecurityPlugin(Star):
         event.set_extra("qq_security_request_ready", None)
         original = list(request.func_tool.tools) if request.func_tool else []
         request.func_tool = ToolSet()
+        if self.command_scope.block_activated(event):
+            event.stop_event()
+            return
         try:
             self._wrap_send(event)
             forward_read_only = bool(event.get_extra("qq_security_forward_read_only"))
@@ -843,18 +877,8 @@ class QQSecurityPlugin(Star):
                 "This comes from transport metadata; references to another chat do not change it. "
                 "Do not invent log timestamps or claim to have checked logs without a tool result."
             )
-            if identity.platform == "aiocqhttp" and not identity.private:
-                scope_prompt += (
-                    " Computer tools are intentionally unavailable in this group. "
-                    "Distinguish explaining from acting: tutorials, example code, and analysis "
-                    "of text the user supplies do not request access to the real host. "
-                    "Answer those directly without a permission preamble, a chat-scope notice, "
-                    "or a suggestion to change chats. Only when the current user actually asks "
-                    "you to execute commands, access host files/logs, or change the real "
-                    "computer, briefly explain that this requires them to switch to an "
-                    "authorized administrator private chat. Do not claim computer access "
-                    "is globally unavailable or that an operation succeeded without tool evidence."
-                )
+            if self.command_scope.restricted(event):
+                scope_prompt += "\n" + COMMAND_SCOPE_PROMPT
             request.system_prompt = (
                 policy_prompt
                 + "\n"
@@ -907,6 +931,13 @@ class QQSecurityPlugin(Star):
     @filter.on_llm_response(priority=-(10**30))
     async def guard_response(self, event, response):
         event.set_extra("qq_security_response_ready", None)
+        if event.get_extra("qq_security_silent_command") or (
+            SILENT_REPLY in (response.completion_text or "")
+            and self.command_scope.restricted(event)
+        ):
+            response.completion_text = ""
+            self.command_scope.deny(event)
+            return
         response.completion_text = self.policy.redact(
             response.completion_text, private_admin=self.is_computer_admin(event)
         )
@@ -924,6 +955,9 @@ class QQSecurityPlugin(Star):
 
     @filter.command("qq_guard_status")
     async def status(self, event):
+        if self.command_scope.restricted(event):
+            self.command_scope.deny(event)
+            return
         if self.is_computer_admin(event):
             yield event.plain_result(
                 "已验证管理员私聊：完整 Codex 电脑执行已开放，可执行终端、文件读写和联网任务；其他会话不开放。"

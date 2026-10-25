@@ -59,6 +59,7 @@ async def test_image_source_tools_require_the_reviewed_plugin(plugin, name, revi
 @pytest.mark.asyncio
 @pytest.mark.parametrize("reviewed", [True, False])
 async def test_source_command_requires_the_reviewed_plugin(plugin, reviewed):
+    plugin.context._config["admins_id"] = ["123456789"]
     module = "astrbot_plugin_imgexploration" if reviewed else "unreviewed_plugin"
     handler = SimpleNamespace(
         event_filters=[CommandFilter("搜图")],
@@ -90,6 +91,7 @@ async def test_webchat_agent_also_cannot_get_a_shell_to_remove_the_guard(plugin)
 async def test_direct_plugin_management_commands_are_blocked_even_for_allowed_qq(
     plugin,
 ):
+    plugin.context._config["admins_id"] = ["123456789"]
     event = Event(text="/plugin uninstall astrbot_plugin_qq_security")
     await plugin.guard_message(event)
     assert event.is_stopped()
@@ -172,6 +174,7 @@ async def test_admin_cannot_read_plugin_config_via_workspace_traversal(plugin):
 
 @pytest.mark.asyncio
 async def test_command_filters_cannot_bypass_the_guard_with_another_wake_prefix(plugin):
+    plugin.context._config["admins_id"] = ["123456789"]
     event = Event(text="!set administrator true")
     dangerous = SimpleNamespace(
         event_filters=[CommandFilter("set")],
@@ -217,6 +220,7 @@ def test_safe_owned_generated_image_still_passes_the_send_guard(plugin, tmp_path
 
 @pytest.mark.asyncio
 async def test_direct_image_command_uses_the_same_persistent_quota(plugin):
+    plugin.context._config["admins_id"] = ["123456789"]
     plugin.config.update({"daily_image_limit": 1, "image_cooldown_seconds": 0})
 
     async def image_handler(event, prompt, use_reference_images):

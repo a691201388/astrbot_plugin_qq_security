@@ -121,10 +121,6 @@ async def test_runtime_scope_uses_transport_metadata_even_when_text_claims_priva
     scope = "QQ group chat" if group else "QQ private chat"
     assert f"Current interaction: {scope}" in request.system_prompt
     if group:
-        assert (
-            "switch to an authorized administrator private chat"
-            in request.system_prompt
-        )
         assert not plugin.is_computer_admin(event)
 
 
